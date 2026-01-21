@@ -1249,7 +1249,7 @@ if st.session_state.page == "صفحه اصلی":
                     st.success("داور ثبت شد ✅ (می‌تواند وارد شود)")
                     st.rerun()
 
-with tabs[3]:
+        with tabs[3]:
             st.subheader("مدیریت ویترین دانش (حذف کامنت)")
             published = db_submissions_published()
             if not published:
@@ -1278,13 +1278,19 @@ with tabs[3]:
                 mt_field = st.selectbox("حوزه موضوع", FIELDS)
                 mt_desc = st.text_area("توضیحات و اهداف موضوع")
                 mt_file = st.file_uploader("پیوست راهنما (اختیاری)", type=None)
-                if st.form_submit_button("ثبت موضوع جدید", type="primary"):
-                    if not mt_title:
+                submitted = st.form_submit_button("ثبت موضوع جدید", type="primary")
+                if submitted:
+                    if not mt_title.strip():
                         st.error("عنوان الزامی است")
                     else:
-                        db_topic_insert(make_id("top"), mt_title, mt_field, mt_desc, 
-                                        mt_file.name if mt_file else None, 
-                                        mt_file.getvalue() if mt_file else None)
+                        db_topic_insert(
+                            make_id("top"),
+                            mt_title.strip(),
+                            mt_field,
+                            mt_desc.strip(),
+                            mt_file.name if mt_file else "",
+                            mt_file.getvalue() if mt_file else None
+                        )
                         st.success("موضوع با موفقیت منتشر شد ✅")
                         st.rerun()
 
@@ -1296,13 +1302,19 @@ with tabs[3]:
                 mr_field = st.selectbox("حوزه تحقیق", FIELDS)
                 mr_summary = st.text_area("خلاصه تحقیق")
                 mr_file = st.file_uploader("فایل تحقیق (اختیاری)", type=None)
-                if st.form_submit_button("ثبت سوابق تحقیق", type="primary"):
-                    if not mr_title:
+                submitted = st.form_submit_button("ثبت سوابق تحقیق", type="primary")
+                if submitted:
+                    if not mr_title.strip():
                         st.error("عنوان الزامی است")
                     else:
-                        db_research_insert(make_id("res"), mr_title, mr_field, mr_summary,
-                                           mr_file.name if mr_file else None,
-                                           mr_file.getvalue() if mr_file else None)
+                        db_research_insert(
+                            make_id("res"),
+                            mr_title.strip(),
+                            mr_field,
+                            mr_summary.strip(),
+                            mr_file.name if mr_file else "",
+                            mr_file.getvalue() if mr_file else None
+                        )
                         st.success("تحقیق ثبت شد ✅")
                         st.rerun()
 
@@ -1312,11 +1324,12 @@ with tabs[3]:
             with st.form("mgr_doc_form"):
                 md_title = st.text_input("عنوان سند/آیین‌نامه")
                 md_file = st.file_uploader("انتخاب فایل سند", type=None)
-                if st.form_submit_button("ذخیره در کتابخانه اسناد"):
-                    if not md_title or not md_file:
+                submitted = st.form_submit_button("ذخیره در کتابخانه اسناد", type="primary")
+                if submitted:
+                    if not md_title.strip() or not md_file:
                         st.error("عنوان و فایل الزامی است")
                     else:
-                        db_doc_insert(make_id("doc"), md_title, md_file.name, md_file.getvalue())
+                        db_doc_insert(make_id("doc"), md_title.strip(), md_file.name, md_file.getvalue())
                         st.success("سند با موفقیت بارگذاری شد ✅")
                         st.rerun()
 
