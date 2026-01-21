@@ -44,10 +44,9 @@ def status_fa(s: str) -> str:
     }.get(s, s)
 
 # =========================
-# Theme + Fonts
+# Theme + Fonts (خوانا)
 # =========================
 def inject_theme():
-    # Support both: assets/fonts or root
     btitr_path = pick_existing([
         "assets/fonts/BTir.ttf",
         "BTir.ttf",
@@ -88,6 +87,9 @@ def inject_theme():
         }}
         """
 
+    title_font = "BTitr" if btitr_path else "Tahoma"
+    body_font = "BNazaninBold" if bnazanin_path else "Tahoma"
+
     st.markdown(
         f"""
         <style>
@@ -98,50 +100,53 @@ def inject_theme():
           --navy: #061a2f;
           --navy2:#0b2a4a;
           --paper:#ffffff;
+          --paper2:#f3f4f6;
           --ink:#0b1220;
-          --muted:#6b7280;
+          --muted:#64748b;
           --accent:#f6c445;
+          --border: rgba(15,23,42,0.12);
         }}
 
+        /* کل اپ روشن برای خوانایی */
         .stApp {{
-          background: linear-gradient(135deg, var(--navy), var(--navy2));
+          background: var(--paper2);
         }}
 
         html, body, [class*="css"] {{
           direction: rtl;
           text-align: right;
-          font-family: {"BNazaninBold" if bnazanin_path else "Tahoma"} !important;
+          font-family: {body_font} !important;
+          color: var(--ink);
         }}
 
         h1,h2,h3 {{
           text-align: center !important;
-          font-family: {"BTitr" if btitr_path else "Tahoma"} !important;
+          font-family: {title_font} !important;
           color: var(--ink) !important;
+          margin-bottom: 10px !important;
         }}
 
+        /* کانتینر اصلی */
         .nexa-shell {{
-          max-width: 1100px;
+          max-width: 1120px;
           margin: 14px auto 92px auto;
-          background: rgba(255,255,255,0.10);
-          border: 1px solid rgba(255,255,255,0.18);
-          border-radius: 18px;
-          padding: 16px;
-          backdrop-filter: blur(10px);
+          padding: 0 12px;
         }}
 
+        /* هدر سرمه‌ای */
         .nexa-header {{
-          background: rgba(255,255,255,0.10);
-          border: 1px solid rgba(255,255,255,0.18);
+          background: linear-gradient(135deg, var(--navy), var(--navy2));
+          border: 1px solid rgba(255,255,255,0.14);
           border-radius: 18px;
-          padding: 16px 18px;
+          padding: 14px 16px;
           display: flex;
           align-items: center;
-          justify-content: center;
-          gap: 16px;
+          justify-content: space-between;
+          gap: 12px;
         }}
         .nexa-title {{
-          font-family: {"BTitr" if btitr_path else "Tahoma"} !important;
-          font-size: 34px;
+          font-family: {title_font} !important;
+          font-size: 30px;
           font-weight: 900;
           color: #fff;
           text-align: center;
@@ -151,34 +156,46 @@ def inject_theme():
           color: rgba(255,255,255,0.88);
           text-align: center;
           margin-top: 4px;
-          font-size: 15px;
+          font-size: 14px;
         }}
 
+        .nexa-center {{
+          display:flex;
+          flex-direction:column;
+          align-items:center;
+          justify-content:center;
+          flex: 1;
+        }}
+
+        /* پنل‌ها سفید */
         .panel {{
           background: var(--paper);
           border-radius: 16px;
           padding: 18px;
-          border: 1px solid rgba(15, 23, 42, 0.10);
+          border: 1px solid var(--border);
+          box-shadow: 0 8px 20px rgba(2,6,23,0.06);
         }}
 
+        /* نوار پایین مثل اپ */
         .bottom-nav {{
           position: fixed;
           left: 0; right: 0; bottom: 0;
           padding: 10px 14px;
-          background: rgba(6, 26, 47, 0.94);
-          border-top: 1px solid rgba(255,255,255,0.14);
-          backdrop-filter: blur(10px);
+          background: rgba(6, 26, 47, 0.98);
+          border-top: 1px solid rgba(255,255,255,0.12);
           z-index: 9999;
         }}
         .bottom-nav .stRadio > div {{
           justify-content: center !important;
-          gap: 18px;
+          gap: 16px;
         }}
         .bottom-nav label {{
           color: white !important;
           font-weight: 900 !important;
+          font-size: 14px !important;
         }}
 
+        /* دکمه‌ها */
         .stButton > button {{
           border-radius: 12px !important;
           font-weight: 900 !important;
@@ -186,6 +203,17 @@ def inject_theme():
         .stButton > button[kind="primary"] {{
           background: var(--accent) !important;
           color: #111827 !important;
+          border: none !important;
+        }}
+
+        /* بهتر شدن لیبل‌ها داخل پنل */
+        .panel label, .panel p, .panel span, .panel div {{
+          color: var(--ink) !important;
+        }}
+
+        /* مخفی کردن حاشیه‌های اضافی */
+        header[data-testid="stHeader"] {{
+          background: transparent;
         }}
         </style>
         """,
@@ -251,7 +279,6 @@ class ForumPost:
     text: str
     ts: float
     status: str = "pending"   # pending/approved/rejected
-    moderator_note: str = ""
     replies: List[ForumReply] = field(default_factory=list)
 
 @dataclass
@@ -322,13 +349,11 @@ def ensure_state():
     st.session_state.setdefault("nid", "")
     st.session_state.setdefault("name", "")
 
-    # users: phone -> {name, nid, password}
-    st.session_state.setdefault("users", {})
+    st.session_state.setdefault("users", {})  # phone -> {name, nid, password}
 
-    # manager fixed
     st.session_state.setdefault("manager_phone", "09146862029")
     st.session_state.setdefault("manager_nid", "1362362506")
-    st.session_state.setdefault("manager_password", "1234")  # اگر خواستی عوضش کن
+    st.session_state.setdefault("manager_password", "1234")  # اگر خواستی عوض کن
 
     st.session_state.setdefault("referees", [
         RefereeProfile(first_name="استاد", last_name="نمونه", phone="0912", national_id="123", field="۲. حوزه فنی و مهندسی", password="1234")
@@ -371,6 +396,7 @@ def logout():
     st.session_state.nid = ""
     st.session_state.name = ""
     st.session_state.selected_submission_id = None
+    st.session_state.page = "صفحه اصلی"
     st.rerun()
 
 def find_referee(phone: str, password: str) -> Optional[RefereeProfile]:
@@ -403,32 +429,45 @@ inject_theme()
 
 st.markdown('<div class="nexa-shell">', unsafe_allow_html=True)
 
-# Header
+# ---------- Header (همیشه خوانا + دکمه‌ها) ----------
 logo_path = pick_existing(["logo.png", "official_logo.png"])
 logo_html = ""
 if logo_path:
     with open(logo_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
-    logo_html = f'<img src="data:image/png;base64,{b64}" style="width:64px;height:64px;object-fit:contain;" />'
+    logo_html = f'<img src="data:image/png;base64,{b64}" style="width:52px;height:52px;object-fit:contain;" />'
 
-st.markdown(
-    f"""
-    <div class="nexa-header">
-      <div style="width:64px;display:flex;justify-content:center;">{logo_html}</div>
-      <div style="display:flex;flex-direction:column;align-items:center;">
-        <div class="nexa-title">نکسا (NEXA)</div>
-        <div class="nexa-subtitle">نظام یکپارچه محتوا عاشورا</div>
-      </div>
-      <div style="width:64px;display:flex;justify-content:center;">
-        <span style="color:rgba(255,255,255,0.75);font-weight:800;">
-          {"وارد شده" if st.session_state.logged_in else "وارد نشده"}
-        </span>
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+# هدر با ستون‌های Streamlit (برای اینکه دکمه‌ها کار کنن)
+st.markdown('<div class="nexa-header">', unsafe_allow_html=True)
+hc1, hc2, hc3 = st.columns([1.2, 3.2, 1.6], vertical_alignment="center")
 
+with hc1:
+    st.markdown(logo_html, unsafe_allow_html=True)
+
+with hc2:
+    st.markdown(
+        """
+        <div class="nexa-center">
+          <div class="nexa-title">نکسا (NEXA)</div>
+          <div class="nexa-subtitle">نظام یکپارچه محتوا عاشورا</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+with hc3:
+    # دکمه‌های لازم
+    st.caption(" ")
+    if st.session_state.logged_in:
+        if st.button("🏠 برگشت به صفحه اصلی"):
+            st.session_state.page = "صفحه اصلی"
+            st.rerun()
+        if st.button("🚪 خروج از سامانه", type="primary"):
+            logout()
+    else:
+        st.markdown("<div style='color:white;font-weight:900;text-align:center;'>وارد نشده</div>", unsafe_allow_html=True)
+
+st.markdown("</div>", unsafe_allow_html=True)
 st.markdown('<div style="height:12px;"></div>', unsafe_allow_html=True)
 
 # =========================
@@ -443,7 +482,6 @@ if not st.session_state.logged_in:
         ["user", "referee", "manager"],
         format_func=lambda x: {"user": "کاربر", "referee": "داور تخصصی / نخبگان دانشی", "manager": "مدیر سامانه"}[x],
     )
-
     phone = st.text_input("شماره همراه")
     password = st.text_input("رمز عبور", type="password")
 
@@ -481,6 +519,7 @@ if not st.session_state.logged_in:
             st.session_state.logged_in = True
             st.session_state.role = role
             st.session_state.phone = phone_n
+            st.session_state.page = "صفحه اصلی"
             st.success("ورود انجام شد ✅")
             st.rerun()
 
@@ -529,16 +568,13 @@ st.markdown("</div>", unsafe_allow_html=True)
 st.session_state.page = choice.split(" ", 1)[1]
 
 # =========================
-# Page: Home
+# Pages
 # =========================
 if st.session_state.page == "صفحه اصلی":
     st.markdown('<div class="panel">', unsafe_allow_html=True)
 
     role = st.session_state.role
 
-    # =========================
-    # USER HOME
-    # =========================
     if role == "user":
         t1, t2, t3, t4, t5 = st.tabs(["ویترین دانش", "ارسال محتوا", "وضعیت پیگیری", "پیشنهاد موضوعات", "تحقیقات صورت گرفته"])
 
@@ -684,17 +720,12 @@ if st.session_state.page == "صفحه اصلی":
                         if r.file_bytes:
                             st.download_button("دانلود فایل", data=r.file_bytes, file_name=r.file_name, key=f"dl_r_{r.id}")
 
-    # =========================
-    # MANAGER HOME (SUPER ADMIN)
-    # =========================
     elif role == "manager":
         st.header("پنل مدیر سامانه (سوپرادمین)")
-
         t0, t1, t2, t3, t4 = st.tabs(["مدیریت ویترین", "میز ارجاع", "ثبت داور", "پیشنهاد موضوعات", "تحقیقات"])
 
-        # Admin: manage showcase comments
         with t0:
-            st.subheader("مدیریت ویترین دانش (حذف کامنت‌ها)")
+            st.subheader("حذف کامنت‌های ویترین دانش")
             published = [s for s in st.session_state.submissions if s.status == "published"]
             if not published:
                 st.info("محتوای منتشر شده‌ای وجود ندارد.")
@@ -702,12 +733,11 @@ if st.session_state.page == "صفحه اصلی":
                 for s in published:
                     with st.container(border=True):
                         st.write(f"**{s.title}**")
-                        st.caption(f"کد دانشی: {s.knowledge_code or '-'}")
                         if not s.comments:
                             st.caption("کامنت ندارد.")
                         else:
                             for idx, cm in enumerate(list(s.comments)):
-                                c1, c2 = st.columns([4, 1])
+                                c1, c2 = st.columns([5, 1])
                                 with c1:
                                     st.write(f"- **{cm.user}**: {cm.text}")
                                 with c2:
@@ -748,7 +778,7 @@ if st.session_state.page == "صفحه اصلی":
                                 st.rerun()
 
         with t2:
-            st.subheader("ثبت داور تخصصی / نخبگان دانشی (با رمز عبور)")
+            st.subheader("ثبت داور (با رمز عبور)")
             c1, c2 = st.columns(2)
             with c1:
                 first = st.text_input("نام", key="rf_first")
@@ -761,7 +791,7 @@ if st.session_state.page == "صفحه اصلی":
 
             active = st.checkbox("فعال باشد", value=True)
 
-            if st.button("ساخت حساب داوری و تایید نهایی", type="primary"):
+            if st.button("ثبت نهایی داور", type="primary"):
                 p = normalize_phone(phone)
                 n = normalize_nid(nid)
                 if not p or not n or not ref_pass:
@@ -833,9 +863,6 @@ if st.session_state.page == "صفحه اصلی":
                     st.success("تحقیق ثبت شد ✅")
                     st.rerun()
 
-    # =========================
-    # REFEREE HOME
-    # =========================
     else:
         st.header("پنل داور تخصصی / نخبگان دانشی")
         mine = [s for s in st.session_state.submissions if normalize_phone(s.assigned_referee_phone) == normalize_phone(st.session_state.phone)]
@@ -885,9 +912,6 @@ if st.session_state.page == "صفحه اصلی":
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# =========================
-# Page: Forum
-# =========================
 elif st.session_state.page == "تالار گفتگو":
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.header("تالار گفتگو")
@@ -961,21 +985,16 @@ elif st.session_state.page == "تالار گفتگو":
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# =========================
-# Profile
-# =========================
 elif st.session_state.page == "پروفایل":
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.header("پروفایل")
     st.text_input("نام و نام خانوادگی", value=st.session_state.name, disabled=True)
     st.text_input("شماره همراه", value=st.session_state.phone, disabled=True)
-    if st.button("خروج", type="primary"):
+    st.caption(f"نقش: {st.session_state.role}")
+    if st.button("🚪 خروج از سامانه", type="primary"):
         logout()
     st.markdown("</div>", unsafe_allow_html=True)
 
-# =========================
-# Documents (Admin only)
-# =========================
 else:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.header("اسناد")
@@ -1008,5 +1027,4 @@ else:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# close shell
 st.markdown("</div>", unsafe_allow_html=True)
