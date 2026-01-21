@@ -2,56 +2,463 @@ import os
 import re
 import time
 import base64
+import sqlite3
 import streamlit as st
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # =========================================================
-# Helpers
+# DB (SQLite)
 # =========================================================
-def _file_exists(path: str) -> bool:
-    try:
-        return os.path.exists(path)
-    except Exception:
-        return False
+DB_PATH = "nexa.db"
 
+def db_conn():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    return conn
+
+def db_init():
+    conn = db_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users(
+        phone TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        nid TEXT NOT NULL,
+        password TEXT NOT NULL,
+        created_ts REAL NOT NULL
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS referees(
+        phone TEXT PRIMARY KEY,
+        first_name TEXT NOT NULL,
+        last_name TEXT NOT NULL,
+        nid TEXT NOT NULL,
+        field TEXT NOT NULL,
+        password TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_ts REAL NOT NULL
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS topics(
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        field TEXT NOT NULL,
+        description TEXT NOT NULL,
+        file_name TEXT,
+        file_bytes BLOB,
+        created_ts REAL NOT NULL
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS research(
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        field TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        file_name TEXT,
+        file_bytes BLOB,
+        created_ts REAL NOT NULL
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS documents(
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        file_bytes BLOB NOT NULL,
+        created_ts REAL NOT NULL
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS submissions(
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        sender_phone TEXT NOT NULL,
+        sender_name TEXT NOT NULL,
+        sender_nid TEXT NOT NULL,
+        suggested_topic_id TEXT,
+        field TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        file_name TEXT,
+        file_mime TEXT,
+        file_bytes BLOB,
+        status TEXT NOT NULL,
+        score INTEGER NOT NULL DEFAULT 0,
+        likes INTEGER NOT NULL DEFAULT 0,
+        views INTEGER NOT NULL DEFAULT 0,
+        knowledge_code TEXT,
+        referee_feedback TEXT,
+        assigned_referee_phone TEXT,
+        assigned_referee_name TEXT,
+        created_ts REAL NOT NULL,
+        FOREIGN KEY(sender_phone) REFERENCES users(phone) ON DELETE NO ACTION
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS submission_likes(
+        submission_id TEXT NOT NULL,
+        user_phone TEXT NOT NULL,
+        created_ts REAL NOT NULL,
+        PRIMARY KEY(submission_id, user_phone),
+        FOREIGN KEY(submission_id) REFERENCES submissions(id) ON DELETE CASCADE
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS submission_comments(
+        id TEXT PRIMARY KEY,
+        submission_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        text TEXT NOT NULL,
+        created_ts REAL NOT NULL,
+        FOREIGN KEY(submission_id) REFERENCES submissions(id) ON DELETE CASCADE
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS forum_posts(
+        id TEXT PRIMARY KEY,
+        sender_phone TEXT NOT NULL,
+        sender_name TEXT NOT NULL,
+        sender_role TEXT NOT NULL,
+        text TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_ts REAL NOT NULL
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS forum_replies(
+        id TEXT PRIMARY KEY,
+        post_id TEXT NOT NULL,
+        referee_phone TEXT NOT NULL,
+        referee_name TEXT NOT NULL,
+        text TEXT NOT NULL,
+        created_ts REAL NOT NULL,
+        FOREIGN KEY(post_id) REFERENCES forum_posts(id) ON DELETE CASCADE
+    );
+    """)
+
+    conn.commit()
+    conn.close()
+
+# ---------------- DB CRUD ----------------
+def db_user_get(phone: str):
+    conn = db_conn()
+    row = conn.execute("SELECT phone,name,nid,password FROM users WHERE phone=?", (phone,)).fetchone()
+    conn.close()
+    return row
+
+def db_user_upsert(phone: str, name: str, nid: str, password: str):
+    conn = db_conn()
+    conn.execute("""
+    INSERT INTO users(phone,name,nid,password,created_ts)
+    VALUES(?,?,?,?,?)
+    ON CONFLICT(phone) DO UPDATE SET name=excluded.name, nid=excluded.nid, password=excluded.password
+    """, (phone, name, nid, password, time.time()))
+    conn.commit()
+    conn.close()
+
+def db_referee_upsert(phone: str, first: str, last: str, nid: str, field_: str, password: str, active: bool):
+    conn = db_conn()
+    conn.execute("""
+    INSERT INTO referees(phone,first_name,last_name,nid,field,password,is_active,created_ts)
+    VALUES(?,?,?,?,?,?,?,?)
+    ON CONFLICT(phone) DO UPDATE SET first_name=excluded.first_name, last_name=excluded.last_name,
+    nid=excluded.nid, field=excluded.field, password=excluded.password, is_active=excluded.is_active
+    """, (phone, first, last, nid, field_, password, 1 if active else 0, time.time()))
+    conn.commit()
+    conn.close()
+
+def db_referee_find(phone: str, nid: str, password: str):
+    conn = db_conn()
+    row = conn.execute("""
+    SELECT first_name,last_name,phone,nid,field,password,is_active
+    FROM referees
+    WHERE phone=? AND nid=? AND password=? AND is_active=1
+    """, (phone, nid, password)).fetchone()
+    conn.close()
+    return row
+
+def db_referees_by_field(field_: str):
+    conn = db_conn()
+    rows = conn.execute("""
+    SELECT first_name,last_name,phone,nid,field,password,is_active
+    FROM referees
+    WHERE field=? AND is_active=1
+    ORDER BY last_name, first_name
+    """, (field_,)).fetchall()
+    conn.close()
+    return rows
+
+def db_topic_insert(id_: str, title: str, field_: str, description: str, file_name: str, file_bytes: bytes | None):
+    conn = db_conn()
+    conn.execute("""
+    INSERT INTO topics(id,title,field,description,file_name,file_bytes,created_ts)
+    VALUES(?,?,?,?,?,?,?)
+    """, (id_, title, field_, description, file_name, file_bytes, time.time()))
+    conn.commit()
+    conn.close()
+
+def db_topics_all():
+    conn = db_conn()
+    rows = conn.execute("""
+    SELECT id,title,field,description,file_name,file_bytes,created_ts
+    FROM topics ORDER BY created_ts DESC
+    """).fetchall()
+    conn.close()
+    return rows
+
+def db_research_insert(id_: str, title: str, field_: str, summary: str, file_name: str, file_bytes: bytes | None):
+    conn = db_conn()
+    conn.execute("""
+    INSERT INTO research(id,title,field,summary,file_name,file_bytes,created_ts)
+    VALUES(?,?,?,?,?,?,?)
+    """, (id_, title, field_, summary, file_name, file_bytes, time.time()))
+    conn.commit()
+    conn.close()
+
+def db_research_all():
+    conn = db_conn()
+    rows = conn.execute("""
+    SELECT id,title,field,summary,file_name,file_bytes,created_ts
+    FROM research ORDER BY created_ts DESC
+    """).fetchall()
+    conn.close()
+    return rows
+
+def db_doc_insert(id_: str, title: str, file_name: str, file_bytes: bytes):
+    conn = db_conn()
+    conn.execute("""
+    INSERT INTO documents(id,title,file_name,file_bytes,created_ts)
+    VALUES(?,?,?,?,?)
+    """, (id_, title, file_name, file_bytes, time.time()))
+    conn.commit()
+    conn.close()
+
+def db_docs_all():
+    conn = db_conn()
+    rows = conn.execute("""
+    SELECT id,title,file_name,file_bytes,created_ts
+    FROM documents ORDER BY created_ts DESC
+    """).fetchall()
+    conn.close()
+    return rows
+
+def db_submission_insert(
+    id_: str, title: str, description: str, sender_phone: str, sender_name: str, sender_nid: str,
+    suggested_topic_id: str, field_: str, content_type: str, file_name: str, file_mime: str, file_bytes: bytes | None
+):
+    conn = db_conn()
+    conn.execute("""
+    INSERT INTO submissions(
+        id,title,description,sender_phone,sender_name,sender_nid,suggested_topic_id,field,content_type,
+        file_name,file_mime,file_bytes,status,score,likes,views,knowledge_code,referee_feedback,assigned_referee_phone,
+        assigned_referee_name,created_ts
+    )
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'pending',0,0,0,'','', '', '', ?)
+    """, (id_, title, description, sender_phone, sender_name, sender_nid, suggested_topic_id, field_, content_type,
+          file_name, file_mime, file_bytes, time.time()))
+    conn.commit()
+    conn.close()
+
+def db_submissions_by_sender(phone: str):
+    conn = db_conn()
+    rows = conn.execute("""
+    SELECT id,title,description,sender_phone,sender_name,sender_nid,suggested_topic_id,field,content_type,
+           file_name,file_mime,file_bytes,status,score,likes,views,knowledge_code,referee_feedback,
+           assigned_referee_phone,assigned_referee_name,created_ts
+    FROM submissions
+    WHERE sender_phone=?
+    ORDER BY created_ts DESC
+    """, (phone,)).fetchall()
+    conn.close()
+    return rows
+
+def db_submissions_published():
+    conn = db_conn()
+    rows = conn.execute("""
+    SELECT id,title,description,sender_phone,sender_name,sender_nid,suggested_topic_id,field,content_type,
+           file_name,file_mime,file_bytes,status,score,likes,views,knowledge_code,referee_feedback,
+           assigned_referee_phone,assigned_referee_name,created_ts
+    FROM submissions
+    WHERE status='published'
+    ORDER BY created_ts DESC
+    """).fetchall()
+    conn.close()
+    return rows
+
+def db_submissions_pending():
+    conn = db_conn()
+    rows = conn.execute("""
+    SELECT id,title,description,sender_phone,sender_name,sender_nid,suggested_topic_id,field,content_type,
+           file_name,file_mime,file_bytes,status,score,likes,views,knowledge_code,referee_feedback,
+           assigned_referee_phone,assigned_referee_name,created_ts
+    FROM submissions
+    WHERE status='pending'
+    ORDER BY created_ts DESC
+    """).fetchall()
+    conn.close()
+    return rows
+
+def db_submissions_assigned_to(ref_phone: str):
+    conn = db_conn()
+    rows = conn.execute("""
+    SELECT id,title,description,sender_phone,sender_name,sender_nid,suggested_topic_id,field,content_type,
+           file_name,file_mime,file_bytes,status,score,likes,views,knowledge_code,referee_feedback,
+           assigned_referee_phone,assigned_referee_name,created_ts
+    FROM submissions
+    WHERE assigned_referee_phone=?
+    ORDER BY created_ts DESC
+    """, (ref_phone,)).fetchall()
+    conn.close()
+    return rows
+
+def db_submission_assign(sub_id: str, ref_phone: str, ref_name: str):
+    conn = db_conn()
+    conn.execute("""
+    UPDATE submissions
+    SET status='waiting_referee', assigned_referee_phone=?, assigned_referee_name=?
+    WHERE id=?
+    """, (ref_phone, ref_name, sub_id))
+    conn.commit()
+    conn.close()
+
+def db_submission_update_review(sub_id: str, status: str, feedback: str, score: int, knowledge_code: str):
+    conn = db_conn()
+    conn.execute("""
+    UPDATE submissions
+    SET status=?, referee_feedback=?, score=?, knowledge_code=?
+    WHERE id=?
+    """, (status, feedback, score, knowledge_code, sub_id))
+    conn.commit()
+    conn.close()
+
+def db_submission_inc_view(sub_id: str):
+    conn = db_conn()
+    conn.execute("UPDATE submissions SET views = views + 1 WHERE id=?", (sub_id,))
+    conn.commit()
+    conn.close()
+
+def db_like_toggle(sub_id: str, user_phone: str) -> Tuple[bool,int]:
+    """
+    returns (liked_now, new_like_count)
+    """
+    conn = db_conn()
+    cur = conn.cursor()
+    existing = cur.execute("SELECT 1 FROM submission_likes WHERE submission_id=? AND user_phone=?", (sub_id, user_phone)).fetchone()
+    if existing:
+        cur.execute("DELETE FROM submission_likes WHERE submission_id=? AND user_phone=?", (sub_id, user_phone))
+    else:
+        cur.execute("INSERT INTO submission_likes(submission_id,user_phone,created_ts) VALUES(?,?,?)", (sub_id, user_phone, time.time()))
+    # recompute count
+    cnt = cur.execute("SELECT COUNT(*) FROM submission_likes WHERE submission_id=?", (sub_id,)).fetchone()[0]
+    cur.execute("UPDATE submissions SET likes=? WHERE id=?", (cnt, sub_id))
+    conn.commit()
+    conn.close()
+    return (not bool(existing), cnt)
+
+def db_comment_add(comment_id: str, sub_id: str, user_name: str, text: str):
+    conn = db_conn()
+    conn.execute("""
+    INSERT INTO submission_comments(id,submission_id,user_name,text,created_ts)
+    VALUES(?,?,?,?,?)
+    """, (comment_id, sub_id, user_name, text, time.time()))
+    conn.commit()
+    conn.close()
+
+def db_comments_for(sub_id: str):
+    conn = db_conn()
+    rows = conn.execute("""
+    SELECT id,user_name,text,created_ts
+    FROM submission_comments
+    WHERE submission_id=?
+    ORDER BY created_ts ASC
+    """, (sub_id,)).fetchall()
+    conn.close()
+    return rows
+
+def db_comment_delete(comment_id: str):
+    conn = db_conn()
+    conn.execute("DELETE FROM submission_comments WHERE id=?", (comment_id,))
+    conn.commit()
+    conn.close()
+
+def db_forum_post_add(id_: str, sender_phone: str, sender_name: str, sender_role: str, text: str):
+    conn = db_conn()
+    conn.execute("""
+    INSERT INTO forum_posts(id,sender_phone,sender_name,sender_role,text,status,created_ts)
+    VALUES(?,?,?,?,?,'pending',?)
+    """, (id_, sender_phone, sender_name, sender_role, text, time.time()))
+    conn.commit()
+    conn.close()
+
+def db_forum_posts(status: Optional[str] = None):
+    conn = db_conn()
+    if status:
+        rows = conn.execute("""
+        SELECT id,sender_phone,sender_name,sender_role,text,status,created_ts
+        FROM forum_posts
+        WHERE status=?
+        ORDER BY created_ts DESC
+        """, (status,)).fetchall()
+    else:
+        rows = conn.execute("""
+        SELECT id,sender_phone,sender_name,sender_role,text,status,created_ts
+        FROM forum_posts
+        ORDER BY created_ts DESC
+        """).fetchall()
+    conn.close()
+    return rows
+
+def db_forum_set_status(post_id: str, status: str):
+    conn = db_conn()
+    conn.execute("UPDATE forum_posts SET status=? WHERE id=?", (status, post_id))
+    conn.commit()
+    conn.close()
+
+def db_forum_reply_add(id_: str, post_id: str, ref_phone: str, ref_name: str, text: str):
+    conn = db_conn()
+    conn.execute("""
+    INSERT INTO forum_replies(id,post_id,referee_phone,referee_name,text,created_ts)
+    VALUES(?,?,?,?,?,?)
+    """, (id_, post_id, ref_phone, ref_name, text, time.time()))
+    conn.commit()
+    conn.close()
+
+def db_forum_replies(post_id: str):
+    conn = db_conn()
+    rows = conn.execute("""
+    SELECT id,referee_phone,referee_name,text,created_ts
+    FROM forum_replies
+    WHERE post_id=?
+    ORDER BY created_ts ASC
+    """, (post_id,)).fetchall()
+    conn.close()
+    return rows
+
+
+# =========================================================
+# Theme + Fonts
+# =========================================================
 def pick_existing(paths: List[str]) -> str:
     for p in paths:
-        if p and _file_exists(p):
+        if p and os.path.exists(p):
             return p
     return ""
 
-def normalize_phone(p: str) -> str:
-    return re.sub(r"\s+", "", (p or "").strip())
-
-def normalize_nid(n: str) -> str:
-    return re.sub(r"\s+", "", (n or "").strip())
-
-def now_ts() -> float:
-    return time.time()
-
-def ts_str(ts: float) -> str:
-    try:
-        return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
-    except Exception:
-        return str(ts)
-
-def make_id(prefix: str) -> str:
-    st.session_state._id_counter += 1
-    return f"{prefix}{st.session_state._id_counter}"
-
-def status_fa(s: str) -> str:
-    return {
-        "pending": "در انتظار ارجاع مدیر سامانه",
-        "waiting_referee": "در انتظار نظر داور",
-        "correction_needed": "نیاز به اصلاح",
-        "published": "تایید و انتشار در ویترین دانش",
-        "rejected": "عدم تایید",
-    }.get(s, s)
-
-# =========================================================
-# Theme + Fonts (BTir.ttf, BNazanin.ttf)
-# =========================================================
 def inject_theme():
     btitr_path = pick_existing(["assets/fonts/BTir.ttf", "BTir.ttf"])
     bnazanin_path = pick_existing(["assets/fonts/BNazanin.ttf", "BNazanin.ttf"])
@@ -101,8 +508,6 @@ def inject_theme():
           --muted:#475569;
           --accent:#f6c445;
           --border: rgba(15,23,42,0.14);
-          --danger:#dc2626;
-          --ok:#16a34a;
         }}
 
         .stApp {{
@@ -123,14 +528,12 @@ def inject_theme():
           margin-bottom: 8px !important;
         }}
 
-        /* shell */
         .nexa-shell {{
           max-width: 1240px;
           margin: 14px auto 96px auto;
           padding: 0 12px;
         }}
 
-        /* header */
         .nexa-header {{
           background: linear-gradient(135deg, var(--navy), var(--navy2));
           border: 1px solid rgba(255,255,255,0.14);
@@ -166,11 +569,6 @@ def inject_theme():
           box-shadow: 0 10px 22px rgba(2,6,23,0.06);
         }}
 
-        .muted {{
-          color: var(--muted) !important;
-        }}
-
-        /* bottom nav like app */
         .bottom-nav {{
           position: fixed;
           left:0; right:0; bottom:0;
@@ -189,7 +587,6 @@ def inject_theme():
           font-size: 14px !important;
         }}
 
-        /* buttons */
         .stButton > button {{
           border-radius: 12px !important;
           font-weight: 900 !important;
@@ -200,11 +597,6 @@ def inject_theme():
           border: none !important;
         }}
 
-        /* cards */
-        div[data-testid="stVerticalBlock"] > div:has(> div[data-testid="stExpander"]) {{
-          border-radius: 12px;
-        }}
-
         header[data-testid="stHeader"] {{
           background: transparent;
         }}
@@ -213,97 +605,10 @@ def inject_theme():
         unsafe_allow_html=True,
     )
 
+
 # =========================================================
-# Data Models
+# App State / Config
 # =========================================================
-@dataclass
-class Comment:
-    id: str
-    user: str
-    text: str
-    ts: float
-
-@dataclass
-class Submission:
-    id: str
-    title: str
-    description: str
-    sender_phone: str
-    sender_name: str
-    sender_nid: str
-    suggested_topic_id: str
-    field: str
-    content_type: str
-    file_name: str
-    file_bytes: bytes | None
-    cover_image_path: str
-    status: str = "pending"
-    score: int = 0
-    likes: int = 0
-    views: int = 0
-    knowledge_code: str = ""
-    referee_feedback: str = ""
-    assigned_referee_phone: str = ""
-    assigned_referee_name: str = ""
-    comments: List[Comment] = field(default_factory=list)
-
-@dataclass
-class RefereeProfile:
-    first_name: str
-    last_name: str
-    phone: str
-    national_id: str
-    field: str
-    password: str
-    is_active: bool = True
-
-@dataclass
-class ForumReply:
-    id: str
-    referee_phone: str
-    referee_name: str
-    text: str
-    ts: float
-
-@dataclass
-class ForumPost:
-    id: str
-    sender_phone: str
-    sender_name: str
-    sender_role: str
-    text: str
-    ts: float
-    status: str = "pending"   # pending/approved/rejected
-    replies: List[ForumReply] = field(default_factory=list)
-
-@dataclass
-class TopicItem:
-    id: str
-    title: str
-    field: str
-    description: str
-    file_name: str
-    file_bytes: bytes | None
-    ts: float
-
-@dataclass
-class ResearchItem:
-    id: str
-    title: str
-    field: str
-    summary: str
-    file_name: str
-    file_bytes: bytes | None
-    ts: float
-
-@dataclass
-class DocumentItem:
-    id: str
-    title: str
-    file_name: str
-    file_bytes: bytes
-    ts: float
-
 FIELDS = [
     "۱. حوزه معماری و منظر",
     "۲. حوزه فنی و مهندسی",
@@ -332,79 +637,36 @@ CONTENT_TYPES = [
     "سایر",
 ]
 
-# =========================================================
-# State
-# =========================================================
-def ensure_state():
-    st.session_state.setdefault("_id_counter", 2000)
+def normalize_phone(p: str) -> str:
+    return re.sub(r"\s+", "", (p or "").strip())
 
+def normalize_nid(n: str) -> str:
+    return re.sub(r"\s+", "", (n or "").strip())
+
+def ensure_state():
+    st.session_state.setdefault("_id_counter", 5000)
     st.session_state.setdefault("logged_in", False)
-    st.session_state.setdefault("role", "guest")  # user/referee/manager
+    st.session_state.setdefault("role", "guest")   # user/referee/manager
     st.session_state.setdefault("phone", "")
     st.session_state.setdefault("nid", "")
     st.session_state.setdefault("name", "")
-    st.session_state.setdefault("page", "صفحه اصلی")
     st.session_state.setdefault("selected_submission_id", None)
+    st.session_state.setdefault("_show_signup", False)
 
-    # Users: phone -> {name, nid, password}
-    st.session_state.setdefault("users", {})
-
-    # Manager credentials (طبق حرف تو)
+    # manager credentials
     st.session_state.setdefault("manager_phone", "09146862029")
     st.session_state.setdefault("manager_nid", "1362362506")
     st.session_state.setdefault("manager_password", "Hadi136236")
 
-    # Referees
-    st.session_state.setdefault("referees", [
-        RefereeProfile(first_name="استاد", last_name="نمونه", phone="0912", national_id="123",
-                       field="۲. حوزه فنی و مهندسی", password="1234", is_active=True)
-    ])
-
-    # Content
-    st.session_state.setdefault("topics", [])
-    st.session_state.setdefault("research", [])
-    st.session_state.setdefault("documents", [])
-    st.session_state.setdefault("forum_posts", [])
-
-    # Submissions
-    cover_default = pick_existing(["Picture1.png", "official_logo.png", "logo.png"])
-    st.session_state.setdefault("submissions", [
-        Submission(
-            id="s1",
-            title="بهسازی زیرسازی آزادراه",
-            description="سناریوی اصلاح لایه بیس",
-            sender_phone="09120000000",
-            sender_name="واحد مهندسی",
-            sender_nid="0000000000",
-            suggested_topic_id="",
-            field="۱۳. حوزه آسفالت",
-            content_type="نوشتاری",
-            file_name="sample.pdf",
-            file_bytes=None,
-            cover_image_path=cover_default,
-            status="published",
-            likes=25,
-            views=500,
-            knowledge_code="A-1301",
-        )
-    ])
+    # page persistence via query params
+    st.session_state.setdefault("page", "صفحه اصلی")
 
 def is_admin() -> bool:
     return st.session_state.role == "manager"
 
-def find_referee(phone: str, nid: str, password: str) -> Optional[RefereeProfile]:
-    p = normalize_phone(phone)
-    n = normalize_nid(nid)
-    for r in st.session_state.referees:
-        if normalize_phone(r.phone) == p and normalize_nid(r.national_id) == n and r.password == password and r.is_active:
-            return r
-    return None
-
-def get_submission(sid: str) -> Optional[Submission]:
-    for s in st.session_state.submissions:
-        if s.id == sid:
-            return s
-    return None
+def make_id(prefix: str) -> str:
+    st.session_state._id_counter += 1
+    return f"{prefix}{st.session_state._id_counter}"
 
 def logout():
     st.session_state.logged_in = False
@@ -412,15 +674,38 @@ def logout():
     st.session_state.phone = ""
     st.session_state.nid = ""
     st.session_state.name = ""
-    st.session_state.page = "صفحه اصلی"
     st.session_state.selected_submission_id = None
+    # page stays, but user logged out
     st.rerun()
 
+def set_page(p: str):
+    st.session_state.page = p
+    # keep same page after refresh (while session remains)
+    try:
+        st.query_params["page"] = p
+    except Exception:
+        pass
+
+def load_page_from_query():
+    try:
+        qp = st.query_params
+        if "page" in qp and qp["page"]:
+            p = qp["page"]
+            if isinstance(p, list):
+                p = p[0]
+            if p in ["صفحه اصلی", "تالار گفتگو", "پروفایل", "اسناد"]:
+                st.session_state.page = p
+    except Exception:
+        pass
+
+
 # =========================================================
-# App
+# Streamlit config
 # =========================================================
 st.set_page_config(page_title="NEXA", layout="wide")
+db_init()
 ensure_state()
+load_page_from_query()
 inject_theme()
 
 st.markdown('<div class="nexa-shell">', unsafe_allow_html=True)
@@ -455,15 +740,14 @@ with h3:
     st.markdown('<div class="nexa-header" style="justify-content:flex-end;">', unsafe_allow_html=True)
     if st.session_state.logged_in:
         if st.button("🏠 برگشت به صفحه اصلی"):
-            st.session_state.page = "صفحه اصلی"
+            set_page("صفحه اصلی")
             st.rerun()
         if st.button("🚪 خروج از سامانه", type="primary"):
             logout()
-    else:
-        st.markdown('<div style="color:white;font-weight:900;">وارد نشده</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown('<div style="height:12px;"></div>', unsafe_allow_html=True)
+
 
 # =========================================================
 # Login / Signup
@@ -490,19 +774,17 @@ if not st.session_state.logged_in:
             n = normalize_nid(nid)
 
             if role == "user":
-                # برای کاربر: ورود با شماره + رمز (کد ملی داخل حساب ذخیره می‌شود)
                 if not p or not password:
                     st.error("شماره همراه و رمز عبور را وارد کنید.")
                     st.stop()
-                u = st.session_state.users.get(p)
-                if not u or u["password"] != password:
+                row = db_user_get(p)
+                if not row or row[3] != password:
                     st.error("کاربر یافت نشد یا رمز اشتباه است. لطفاً ثبت‌نام کنید.")
                     st.stop()
-                st.session_state.name = u["name"]
-                st.session_state.nid = u["nid"]
+                st.session_state.name = row[1]
+                st.session_state.nid = row[2]
 
             elif role == "manager":
-                # برای مدیر: شماره + کد ملی + رمز
                 if not p or not n or not password:
                     st.error("شماره همراه، کد ملی و رمز عبور را وارد کنید.")
                     st.stop()
@@ -512,22 +794,20 @@ if not st.session_state.logged_in:
                 st.session_state.name = "مدیر سامانه"
                 st.session_state.nid = st.session_state.manager_nid
 
-            else:
-                # برای داور: شماره + کد ملی + رمز
+            else:  # referee
                 if not p or not n or not password:
                     st.error("شماره همراه، کد ملی و رمز عبور را وارد کنید.")
                     st.stop()
-                ref = find_referee(p, n, password)
+                ref = db_referee_find(p, n, password)
                 if not ref:
                     st.error("داور یافت نشد یا مشخصات اشتباه است.")
                     st.stop()
-                st.session_state.name = f"{ref.first_name} {ref.last_name}"
-                st.session_state.nid = ref.national_id
+                st.session_state.name = f"{ref[0]} {ref[1]}"
+                st.session_state.nid = ref[3]
 
             st.session_state.logged_in = True
             st.session_state.role = role
             st.session_state.phone = p
-            st.session_state.page = "صفحه اصلی"
             st.success("ورود انجام شد ✅")
             st.rerun()
 
@@ -536,7 +816,6 @@ if not st.session_state.logged_in:
         if st.button("ثبت نام"):
             st.session_state._show_signup = True
 
-    # Signup (Form) - کار می‌کند
     if st.session_state.get("_show_signup", False):
         st.divider()
         st.subheader("ثبت نام")
@@ -552,13 +831,12 @@ if not st.session_state.logged_in:
         if submit:
             p = normalize_phone(su_phone)
             n = normalize_nid(su_nid)
-
             if not su_name.strip() or not p or not n or not su_pass1:
                 st.error("همه فیلدها الزامی است.")
             elif su_pass1 != su_pass2:
                 st.error("رمز عبور و تکرار آن یکسان نیست.")
             else:
-                st.session_state.users[p] = {"name": su_name.strip(), "nid": n, "password": su_pass1}
+                db_user_upsert(p, su_name.strip(), n, su_pass1)
                 st.success("ثبت‌نام انجام شد ✅ حالا می‌تونی وارد بشی")
                 st.session_state._show_signup = False
                 st.rerun()
@@ -567,8 +845,9 @@ if not st.session_state.logged_in:
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
+
 # =========================================================
-# Bottom Navigation (like app)
+# Bottom Navigation (like app) + page persistence
 # =========================================================
 nav_labels = ["صفحه اصلی", "تالار گفتگو", "پروفایل", "اسناد"]
 nav_icons = {"صفحه اصلی": "🏠", "تالار گفتگو": "💬", "پروفایل": "👤", "اسناد": "📄"}
@@ -578,7 +857,12 @@ current = f"{nav_icons[st.session_state.page]} {st.session_state.page}"
 st.markdown('<div class="bottom-nav">', unsafe_allow_html=True)
 choice = st.radio("", nav_display, index=nav_display.index(current), horizontal=True, label_visibility="collapsed")
 st.markdown("</div>", unsafe_allow_html=True)
-st.session_state.page = choice.split(" ", 1)[1]
+
+chosen_page = choice.split(" ", 1)[1]
+if chosen_page != st.session_state.page:
+    set_page(chosen_page)
+    st.rerun()
+
 
 # =========================================================
 # Page: Home
@@ -594,76 +878,76 @@ if st.session_state.page == "صفحه اصلی":
     if role == "user":
         tabs = st.tabs(["ویترین دانش", "ارسال محتوا", "وضعیت پیگیری", "پیشنهاد موضوعات", "تحقیقات صورت گرفته"])
 
-        # ویترین دانش
+        # ویترین دانش (فقط منتشر شده ها) - نمونه حذف
         with tabs[0]:
             st.header("ویترین دانش")
-            published = [s for s in st.session_state.submissions if s.status == "published"]
+            published = db_submissions_published()
             if not published:
                 st.info("فعلاً محتوایی منتشر نشده.")
             else:
-                for s in published:
-                    with st.container(border=True):
-                        s.views += 1
+                for row in published:
+                    (sid,title,desc,s_phone,s_name,s_nid,topic_id,field_,ctype,
+                     fname,fmime,fbytes,status,score,likes,views,kcode,fb,ar_phone,ar_name,created_ts) = row
 
-                        # تصاویر موجود در ریپو (طبق خواسته)
-                        cover = s.cover_image_path
-                        if cover and _file_exists(cover):
-                            st.image(cover, use_container_width=True)
+                    with st.container(border=True):
+                        db_submission_inc_view(sid)
+                        views += 1
+
+                        # اگر فایل ارسالی تصویر باشد، همان را نمایش بده
+                        if fbytes and fmime and fmime.startswith("image/"):
+                            st.image(fbytes, use_container_width=True)
                         else:
-                            fallback = pick_existing(["Picture1.png", "official_logo.png", "logo.png"])
+                            # اگر نبود، لوگو نمایش بده
+                            fallback = pick_existing(["official_logo.png", "logo.png"])
                             if fallback:
                                 st.image(fallback, use_container_width=True)
 
-                        st.subheader(s.title)
-                        st.caption(f"{s.field} | نوع محتوا: {s.content_type} | کد دانشی: {s.knowledge_code or '-'} | بازدید: {s.views}")
-                        st.write(s.description)
+                        st.subheader(title)
+                        st.caption(f"{field_} | نوع محتوا: {ctype} | کد دانشی: {kcode or '-'} | بازدید: {views}")
+                        st.write(desc)
 
-                        cA, cB = st.columns([1.2, 3])
-                        with cA:
-                            if st.button(f"❤️ لایک ({s.likes})", key=f"like_{s.id}"):
-                                s.likes += 1
-                                st.rerun()
-                        with cB:
-                            st.caption(" ")
+                        # Like
+                        if st.button(f"❤️ لایک ({likes})", key=f"like_{sid}"):
+                            _, new_cnt = db_like_toggle(sid, st.session_state.phone)
+                            st.success(f"ثبت شد ✅ (لایک‌ها: {new_cnt})")
+                            st.rerun()
 
                         st.subheader("نظرات")
-                        if s.comments:
-                            for cm in sorted(s.comments, key=lambda x: x.ts):
-                                st.write(f"- **{cm.user}**: {cm.text}")
-                                st.caption(ts_str(cm.ts))
+                        comments = db_comments_for(sid)
+                        if comments:
+                            for (cid, uname, ctext, cts) in comments:
+                                st.write(f"- **{uname}**: {ctext}")
+                                st.caption(time.strftime("%Y-%m-%d %H:%M", time.localtime(cts)))
                         else:
                             st.caption("نظری ثبت نشده.")
 
-                        new_comment = st.text_input("افزودن نظر", key=f"cmt_{s.id}", placeholder="نظرت رو بنویس...")
-                        if st.button("ثبت نظر", key=f"cmt_btn_{s.id}", type="primary"):
+                        new_comment = st.text_input("افزودن نظر", key=f"cmt_{sid}", placeholder="نظرت رو بنویس...")
+                        if st.button("ثبت نظر", key=f"cmt_btn_{sid}", type="primary"):
                             if new_comment.strip():
-                                s.comments.append(Comment(id=make_id("c"), user=st.session_state.name, text=new_comment.strip(), ts=now_ts()))
+                                db_comment_add(make_id("c"), sid, st.session_state.name, new_comment.strip())
                                 st.success("نظر ثبت شد ✅")
                                 st.rerun()
 
-        # ارسال محتوا
+        # ارسال محتوا (تصویر ویترین حذف شد)
         with tabs[1]:
             st.header("ارسال محتوا")
 
-            topic_options = ["(بدون انتخاب موضوع)"] + [f"{t.title} | {t.field}" for t in st.session_state.topics]
+            topics = db_topics_all()
+            topic_options = ["(بدون انتخاب موضوع)"] + [f"{t[1]} | {t[2]}" for t in topics]
             topic_pick = st.selectbox("انتخاب از پیشنهادات مدیر (اختیاری)", topic_options)
 
             picked_topic_id = ""
-            if topic_pick != "(بدون انتخاب موضوع)":
-                for t in st.session_state.topics:
-                    if f"{t.title} | {t.field}" == topic_pick:
-                        picked_topic_id = t.id
-                        break
-
             default_title = ""
             default_desc = ""
             default_field = FIELDS[0]
-            if picked_topic_id:
-                for t in st.session_state.topics:
-                    if t.id == picked_topic_id:
-                        default_title = t.title
-                        default_desc = t.description
-                        default_field = t.field
+
+            if topic_pick != "(بدون انتخاب موضوع)":
+                for t in topics:
+                    if f"{t[1]} | {t[2]}" == topic_pick:
+                        picked_topic_id = t[0]
+                        default_title = t[1]
+                        default_desc = t[3]
+                        default_field = t[2]
                         break
 
             title = st.text_input("عنوان", value=default_title)
@@ -671,13 +955,7 @@ if st.session_state.page == "صفحه اصلی":
             field_sel = st.selectbox("کمیته / حوزه تخصصی", FIELDS, index=FIELDS.index(default_field) if default_field in FIELDS else 0)
             content_type = st.selectbox("نوع محتوا", CONTENT_TYPES)
 
-            # آپلود فایل واقعی
             uploaded = st.file_uploader("پیوست فایل", type=None)
-
-            cover_pick = st.selectbox("تصویر ویترین (اختیاری)", ["(خالی)", "Picture1.png", "official_logo.png", "logo.png"])
-            cover_path = "" if cover_pick == "(خالی)" else cover_pick
-            if cover_path and not _file_exists(cover_path):
-                cover_path = ""
 
             if st.button("ثبت و ارسال به مدیر سامانه", type="primary"):
                 if not title.strip():
@@ -685,80 +963,88 @@ if st.session_state.page == "صفحه اصلی":
                 else:
                     fname = uploaded.name if uploaded else "N/A"
                     fbytes = uploaded.getvalue() if uploaded else None
-                    st.session_state.submissions.insert(
-                        0,
-                        Submission(
-                            id=make_id("s"),
-                            title=title.strip(),
-                            description=desc.strip(),
-                            sender_phone=st.session_state.phone,
-                            sender_name=st.session_state.name,
-                            sender_nid=st.session_state.nid,
-                            suggested_topic_id=picked_topic_id,
-                            field=field_sel,
-                            content_type=content_type,
-                            file_name=fname,
-                            file_bytes=fbytes,
-                            cover_image_path=cover_path,
-                            status="pending",
-                        ),
+                    fmime = uploaded.type if uploaded else ""
+
+                    db_submission_insert(
+                        id_=make_id("s"),
+                        title=title.strip(),
+                        description=desc.strip(),
+                        sender_phone=st.session_state.phone,
+                        sender_name=st.session_state.name,
+                        sender_nid=st.session_state.nid,
+                        suggested_topic_id=picked_topic_id,
+                        field_=field_sel,
+                        content_type=content_type,
+                        file_name=fname,
+                        file_mime=fmime,
+                        file_bytes=fbytes
                     )
                     st.success("ارسال شد ✅")
                     st.rerun()
 
-        # وضعیت پیگیری
+        # وضعیت پیگیری (حذف متن‌های اضافی و نمونه)
         with tabs[2]:
             st.header("وضعیت پیگیری")
-            my = [s for s in st.session_state.submissions if s.sender_phone == st.session_state.phone]
+            my = db_submissions_by_sender(st.session_state.phone)
             if not my:
                 st.info("هنوز محتوایی ارسال نکردی.")
             else:
-                for s in my:
-                    with st.container(border=True):
-                        st.write(f"**{s.title}**")
-                        st.caption(f"وضعیت: {status_fa(s.status)} | نوع محتوا: {s.content_type} | حوزه: {s.field}")
-                        if s.assigned_referee_name:
-                            st.write(f"داور: **{s.assigned_referee_name}**")
-                        if s.referee_feedback:
-                            st.write(f"📝 نظر/اصلاحات داور: {s.referee_feedback}")
-                        if s.score:
-                            st.write(f"⭐ امتیاز: {s.score}")
-                        if s.status == "published":
-                            st.write(f"کد دانشی: **{s.knowledge_code}**")
+                for row in my:
+                    (sid,title,desc,s_phone,s_name,s_nid,topic_id,field_,ctype,
+                     fname,fmime,fbytes,status,score,likes,views,kcode,fb,ar_phone,ar_name,created_ts) = row
 
-        # پیشنهاد موضوعات
+                    with st.container(border=True):
+                        st.write(f"**{title}**")
+                        st.caption(f"وضعیت: {status_fa(status)}")
+                        # فقط موارد واقعی و مفید
+                        st.write(f"حوزه: **{field_}**")
+                        st.write(f"نوع محتوا: **{ctype}**")
+                        if ar_name:
+                            st.write(f"داور: **{ar_name}**")
+                        if fb:
+                            st.write(f"📝 نظر/اصلاحات داور: {fb}")
+                        if score:
+                            st.write(f"⭐ امتیاز: {score}")
+                        if status == "published":
+                            st.write(f"✅ منتشر شد در ویترین دانش | کد دانشی: **{kcode}**")
+
+        # پیشنهاد موضوعات (حتماً برای کاربر قابل مشاهده)
         with tabs[3]:
             st.header("پیشنهاد موضوعات")
-            if not st.session_state.topics:
+            topics = db_topics_all()
+            if not topics:
                 st.info("موضوعی ثبت نشده.")
             else:
-                for t in st.session_state.topics:
+                for t in topics:
+                    (tid, ttitle, tfield, tdesc, tfname, tfbytes, tts) = t
                     with st.container(border=True):
-                        st.write(f"**{t.title}**")
-                        st.caption(f"حوزه: {t.field} | تاریخ: {ts_str(t.ts)}")
-                        st.write(t.description)
-                        if t.file_bytes:
-                            st.download_button("دانلود پیوست", data=t.file_bytes, file_name=t.file_name, key=f"dl_topic_{t.id}")
+                        st.write(f"**{ttitle}**")
+                        st.caption(f"حوزه: {tfield} | تاریخ: {time.strftime('%Y-%m-%d %H:%M', time.localtime(tts))}")
+                        st.write(tdesc)
+                        if tfbytes:
+                            st.download_button("دانلود پیوست", data=tfbytes, file_name=tfname or "file", key=f"dl_topic_{tid}")
 
-        # تحقیقات صورت گرفته
+        # تحقیقات
         with tabs[4]:
             st.header("تحقیقات صورت گرفته")
-            if not st.session_state.research:
+            res = db_research_all()
+            if not res:
                 st.info("تحقیقی ثبت نشده.")
             else:
-                for r in st.session_state.research:
+                for r in res:
+                    (rid, rtitle, rfield, rsum, rfname, rfbytes, rts) = r
                     with st.container(border=True):
-                        st.write(f"**{r.title}**")
-                        st.caption(f"حوزه: {r.field} | تاریخ: {ts_str(r.ts)}")
-                        st.write(r.summary)
-                        if r.file_bytes:
-                            st.download_button("دانلود فایل", data=r.file_bytes, file_name=r.file_name, key=f"dl_res_{r.id}")
+                        st.write(f"**{rtitle}**")
+                        st.caption(f"حوزه: {rfield} | تاریخ: {time.strftime('%Y-%m-%d %H:%M', time.localtime(rts))}")
+                        st.write(rsum)
+                        if rfbytes:
+                            st.download_button("دانلود فایل", data=rfbytes, file_name=rfname or "file", key=f"dl_res_{rid}")
 
     # -----------------------------
-    # MANAGER HOME (سوپرادمین)
+    # MANAGER HOME
     # -----------------------------
     elif role == "manager":
-        st.header("پنل مدیر سامانه (سوپرادمین)")
+        st.header("پنل مدیر سامانه")
         tabs = st.tabs([
             "میز ارجاع",
             "ثبت داور تخصصی",
@@ -772,33 +1058,38 @@ if st.session_state.page == "صفحه اصلی":
         # میز ارجاع
         with tabs[0]:
             st.subheader("میز ارجاع مدیر سامانه")
-            pending = [s for s in st.session_state.submissions if s.status == "pending"]
+            pending = db_submissions_pending()
             if not pending:
                 st.info("موردی برای ارجاع نیست.")
             else:
-                for s in pending:
-                    with st.container(border=True):
-                        st.write(f"**{s.title}**")
-                        st.caption(f"فرستنده: {s.sender_name} ({s.sender_phone}) | حوزه: {s.field} | نوع: {s.content_type}")
-                        st.write(s.description)
-                        if s.file_bytes:
-                            st.download_button("دانلود فایل پیوست", data=s.file_bytes, file_name=s.file_name, key=f"dl_sub_{s.id}")
+                for row in pending:
+                    (sid,title,desc,s_phone,s_name,s_nid,topic_id,field_,ctype,
+                     fname,fmime,fbytes,status,score,likes,views,kcode,fb,ar_phone,ar_name,created_ts) = row
 
-                        # انتخاب داورهای همان حوزه
-                        refs = [r for r in st.session_state.referees if r.is_active and r.field == s.field]
+                    with st.container(border=True):
+                        st.write(f"**{title}**")
+                        st.caption(f"فرستنده: {s_name} ({s_phone}) | حوزه: {field_} | نوع: {ctype}")
+                        st.write(desc)
+                        if fbytes:
+                            st.download_button("دانلود فایل پیوست", data=fbytes, file_name=fname or "file", key=f"dl_sub_{sid}")
+
+                        refs = db_referees_by_field(field_)
                         if not refs:
                             st.warning("برای این حوزه داور فعالی ثبت نشده.")
                         else:
-                            ref = st.selectbox(
+                            # نمایش: "هادی باقریان (هوش مصنوعی)"
+                            options = []
+                            for r in refs:
+                                first, last, rphone, rnid, rfield, rpass, ractive = r
+                                options.append((f"{first} {last} ({rfield})", rphone, f"{first} {last}"))
+                            label = st.selectbox(
                                 "انتخاب داور",
-                                refs,
-                                format_func=lambda r: f"{r.first_name} {r.last_name} | {r.phone}",
-                                key=f"sel_ref_{s.id}",
+                                options,
+                                format_func=lambda x: x[0],
+                                key=f"sel_ref_{sid}"
                             )
-                            if st.button("بررسی و ارجاع", key=f"assign_{s.id}", type="primary"):
-                                s.status = "waiting_referee"
-                                s.assigned_referee_phone = normalize_phone(ref.phone)
-                                s.assigned_referee_name = f"{ref.first_name} {ref.last_name}"
+                            if st.button("بررسی و ارجاع", key=f"assign_{sid}", type="primary"):
+                                db_submission_assign(sid, normalize_phone(label[1]), label[2])
                                 st.success("ارجاع شد ✅")
                                 st.rerun()
 
@@ -821,401 +1112,218 @@ if st.session_state.page == "صفحه اصلی":
                 p = normalize_phone(phone)
                 n = normalize_nid(nid)
                 if not (first.strip() and last.strip() and p and n and ref_pass):
-                    st.error("همه فیلدها (نام، نام خانوادگی، شماره، کد ملی، رمز) الزامی است.")
+                    st.error("همه فیلدها الزامی است.")
                 else:
-                    # اگر داور با همین شماره وجود داشت، آپدیت شود
-                    updated = False
-                    for r in st.session_state.referees:
-                        if normalize_phone(r.phone) == p:
-                            r.first_name = first.strip()
-                            r.last_name = last.strip()
-                            r.national_id = n
-                            r.field = field_sel
-                            r.password = ref_pass
-                            r.is_active = active
-                            updated = True
-                            break
-                    if not updated:
-                        st.session_state.referees.append(
-                            RefereeProfile(
-                                first_name=first.strip(),
-                                last_name=last.strip(),
-                                phone=p,
-                                national_id=n,
-                                field=field_sel,
-                                password=ref_pass,
-                                is_active=active,
-                            )
-                        )
-                    st.success("داور ثبت/به‌روزرسانی شد ✅ (می‌تواند وارد شود)")
+                    db_referee_upsert(p, first.strip(), last.strip(), n, field_sel, ref_pass, active)
+                    st.success("داور ثبت شد ✅ (می‌تواند وارد شود)")
                     st.rerun()
 
-        # حذف کامنت‌ها (مدیریت ویترین)
+        # مدیریت ویترین (حذف کامنت) - ادامه بخش مدیریت
         with tabs[2]:
-            st.subheader("مدیریت ویترین دانش (حذف کامنت)")
-            published = [s for s in st.session_state.submissions if s.status == "published"]
+            st.subheader("مدیریت ویترین دانش (نظارت بر نظرات)")
+            published = db_submissions_published()
             if not published:
                 st.info("محتوای منتشر شده‌ای وجود ندارد.")
             else:
-                for s in published:
-                    with st.container(border=True):
-                        st.write(f"**{s.title}**")
-                        if not s.comments:
-                            st.caption("کامنت ندارد.")
-                        else:
-                            for idx, cm in enumerate(list(s.comments)):
-                                cc1, cc2 = st.columns([5, 1])
-                                with cc1:
-                                    st.write(f"- **{cm.user}**: {cm.text}")
-                                with cc2:
-                                    if st.button("🗑 حذف", key=f"del_cmt_{s.id}_{cm.id}"):
-                                        s.comments.pop(idx)
-                                        st.success("کامنت حذف شد ✅")
-                                        st.rerun()
+                for row in published:
+                    sid, title = row[0], row[1]
+                    comments = db_comments_for(sid)
+                    if comments:
+                        with st.expander(f"نظرات محتوای: {title}"):
+                            for (cid, uname, ctext, cts) in comments:
+                                ccol1, ccol2 = st.columns([5, 1])
+                                ccol1.write(f"**{uname}**: {ctext}")
+                                if ccol2.button("🗑 حذف", key=f"del_c_{cid}"):
+                                    db_comment_delete(cid)
+                                    st.rerun()
+                    else:
+                        st.caption(f"بدون نظر: {title}")
 
-        # پیشنهاد موضوعات
+        # پیشنهاد موضوعات (توسط مدیر - کاربر مشاهده می‌کند)
         with tabs[3]:
-            st.subheader("پیشنهاد موضوعات (مدیر)")
-            title = st.text_input("عنوان موضوع", key="topic_title")
-            field_sel = st.selectbox("حوزه", FIELDS, key="topic_field")
-            desc = st.text_area("توضیحات", key="topic_desc", height=120)
-            up = st.file_uploader("فایل پیوست (اختیاری)", key="topic_file")
-
-            if st.button("ثبت موضوع", type="primary", key="topic_save"):
-                if not title.strip():
-                    st.error("عنوان موضوع الزامی است.")
+            st.subheader("ثبت موضوعات پیشنهادی برای نخبگان")
+            t_title = st.text_input("عنوان موضوع", key="m_t_t")
+            t_field = st.selectbox("حوزه موضوع", FIELDS, key="m_t_f")
+            t_desc = st.text_area("توضیحات و ضرورت", key="m_t_d")
+            t_file = st.file_uploader("پیوست راهنما (اختیاری)", key="m_t_file")
+            
+            if st.button("ثبت و انتشار موضوع", type="primary"):
+                if not t_title.strip(): st.error("عنوان الزامی است")
                 else:
-                    fname = up.name if up else "N/A"
-                    fbytes = up.getvalue() if up else None
-                    st.session_state.topics.insert(
-                        0,
-                        TopicItem(
-                            id=make_id("t"),
-                            title=title.strip(),
-                            field=field_sel,
-                            description=desc.strip(),
-                            file_name=fname,
-                            file_bytes=fbytes,
-                            ts=now_ts(),
-                        )
-                    )
-                    st.success("موضوع ثبت شد ✅")
+                    db_topic_insert(make_id("top"), t_title, t_field, t_desc, 
+                                   t_file.name if t_file else "", t_file.getvalue() if t_file else None)
+                    st.success("موضوع با موفقیت ثبت شد.")
                     st.rerun()
 
-            st.divider()
-            if st.session_state.topics:
-                st.caption("لیست موضوعات ثبت‌شده:")
-                for t in st.session_state.topics:
-                    with st.container(border=True):
-                        st.write(f"**{t.title}**")
-                        st.caption(f"{t.field} | {ts_str(t.ts)}")
-                        st.write(t.description)
-
-        # تحقیقات
+        # تحقیقات صورت گرفته
         with tabs[4]:
-            st.subheader("تحقیقات صورت گرفته (مدیر)")
-            title = st.text_input("عنوان تحقیق", key="res_title")
-            field_sel = st.selectbox("حوزه", FIELDS, key="res_field")
-            summary = st.text_area("خلاصه / توضیحات", key="res_sum", height=120)
-            up = st.file_uploader("فایل تحقیق (اختیاری)", key="res_file")
-
-            if st.button("ثبت تحقیق", type="primary", key="res_save"):
-                if not title.strip():
-                    st.error("عنوان تحقیق الزامی است.")
-                else:
-                    fname = up.name if up else "N/A"
-                    fbytes = up.getvalue() if up else None
-                    st.session_state.research.insert(
-                        0,
-                        ResearchItem(
-                            id=make_id("r"),
-                            title=title.strip(),
-                            field=field_sel,
-                            summary=summary.strip(),
-                            file_name=fname,
-                            file_bytes=fbytes,
-                            ts=now_ts(),
-                        )
-                    )
-                    st.success("تحقیق ثبت شد ✅")
-                    st.rerun()
-
-            st.divider()
-            if st.session_state.research:
-                st.caption("لیست تحقیقات ثبت‌شده:")
-                for r in st.session_state.research:
-                    with st.container(border=True):
-                        st.write(f"**{r.title}**")
-                        st.caption(f"{r.field} | {ts_str(r.ts)}")
-                        st.write(r.summary)
+            st.subheader("ثبت سوابق تحقیقاتی")
+            r_title = st.text_input("عنوان تحقیق", key="m_r_t")
+            r_field = st.selectbox("حوزه تحقیق", FIELDS, key="m_r_f")
+            r_sum = st.text_area("خلاصه نتایج", key="m_r_s")
+            r_up = st.file_uploader("فایل تحقیق", key="m_r_up")
+            if st.button("ذخیره تحقیق"):
+                db_research_insert(make_id("res"), r_title, r_field, r_sum, 
+                                  r_up.name if r_up else "", r_up.getvalue() if r_up else None)
+                st.success("تحقیق ثبت شد.")
 
         # اسناد
         with tabs[5]:
-            st.subheader("اسناد / نشریه‌ها (فقط مدیر)")
-            doc_title = st.text_input("عنوان سند", key="doc_title")
-            doc_file = st.file_uploader("فایل سند/نشریه", key="doc_file")
+            st.subheader("بارگذاری اسناد و نشریات")
+            doc_t = st.text_input("عنوان سند/آیین‌نامه")
+            doc_f = st.file_uploader("انتخاب فایل PDF/Doc")
+            if st.button("ثبت در کتابخانه اسناد"):
+                if doc_t and doc_f:
+                    db_doc_insert(make_id("doc"), doc_t, doc_f.name, doc_f.getvalue())
+                    st.success("سند بارگذاری شد.")
+                else: st.error("عنوان و فایل الزامی است.")
 
-            if st.button("ثبت سند", type="primary", key="doc_save"):
-                if not doc_title.strip() or not doc_file:
-                    st.error("عنوان و فایل سند الزامی است.")
-                else:
-                    st.session_state.documents.insert(
-                        0,
-                        DocumentItem(
-                            id=make_id("d"),
-                            title=doc_title.strip(),
-                            file_name=doc_file.name,
-                            file_bytes=doc_file.getvalue(),
-                            ts=now_ts(),
-                        )
-                    )
-                    st.success("سند ثبت شد ✅")
-                    st.rerun()
-
-            st.divider()
-            if not st.session_state.documents:
-                st.info("سندی ثبت نشده.")
-            else:
-                for d in st.session_state.documents:
-                    with st.container(border=True):
-                        st.write(f"**{d.title}**")
-                        st.caption(f"{d.file_name} | {ts_str(d.ts)}")
-                        st.download_button("دانلود", data=d.file_bytes, file_name=d.file_name, key=f"dl_doc_{d.id}")
-
-        # تایید پیام‌های تالار گفتگو
+        # تایید پیام‌های تالار
         with tabs[6]:
-            st.subheader("تالار گفتگو - تایید پیام‌ها (مدیر)")
-            pend = [p for p in st.session_state.forum_posts if p.status == "pending"]
-            if not pend:
-                st.info("پیامی برای تایید وجود ندارد.")
+            st.subheader("تایید پیام‌های جدید تالار گفتگو")
+            pend_posts = db_forum_posts("pending")
+            if not pend_posts:
+                st.info("پیام جدیدی برای تایید وجود ندارد.")
             else:
-                for p in pend:
+                for p in pend_posts:
                     with st.container(border=True):
-                        st.write(f"**از:** {p.sender_name} ({p.sender_role}) | {ts_str(p.ts)}")
-                        st.write(p.text)
-
-                        a, b = st.columns(2)
-                        with a:
-                            if st.button("تایید", key=f"ap_{p.id}", type="primary"):
-                                p.status = "approved"
-                                st.success("تایید شد ✅")
-                                st.rerun()
-                        with b:
-                            if st.button("رد", key=f"rej_{p.id}"):
-                                p.status = "rejected"
-                                st.warning("رد شد")
-                                st.rerun()
-
-    # -----------------------------
-    # REFEREE HOME
-    # -----------------------------
-    else:
-        st.header("پنل داور تخصصی / نخبگان دانشی")
-
-        mine = [s for s in st.session_state.submissions if normalize_phone(s.assigned_referee_phone) == normalize_phone(st.session_state.phone)]
-        if not mine:
-            st.info("فعلاً محتوایی به شما ارجاع نشده.")
-        else:
-            left, right = st.columns([2, 3])
-
-            with left:
-                st.subheader("ارجاع‌های من")
-                for s in mine:
-                    with st.container(border=True):
-                        st.write(f"**{s.title}**")
-                        st.caption(f"وضعیت: {status_fa(s.status)} | حوزه: {s.field}")
-                        if st.button("باز کردن", key=f"open_{s.id}"):
-                            st.session_state.selected_submission_id = s.id
+                        st.write(f"**فرستنده:** {p[2]} ({p[3]})")
+                        st.write(p[4])
+                        ac1, ac2 = st.columns(2)
+                        if ac1.button("✅ تایید انتشار", key=f"fok_{p[0]}"):
+                            db_forum_set_status(p[0], "approved")
+                            st.rerun()
+                        if ac2.button("❌ رد پیام", key=f"frej_{p[0]}"):
+                            db_forum_set_status(p[0], "rejected")
                             st.rerun()
 
-            with right:
-                s = get_submission(st.session_state.selected_submission_id) if st.session_state.selected_submission_id else None
-                if not s:
-                    st.info("از سمت چپ یک ارجاع انتخاب کن.")
-                else:
-                    st.subheader(f"بررسی: {s.title}")
-                    st.caption(f"ارسال‌کننده: {s.sender_name} | {s.sender_phone} | نوع محتوا: {s.content_type}")
-                    st.write(s.description)
-
-                    if s.file_bytes:
-                        st.download_button("دانلود فایل پیوست", data=s.file_bytes, file_name=s.file_name, key=f"dl_ref_{s.id}")
-
+    # -----------------------------
+    # REFEREE HOME (پنل داوری)
+    # -----------------------------
+    else:
+        st.header("پنل داوری تخصصی")
+        tasks = db_submissions_assigned_to(st.session_state.phone)
+        
+        if not tasks:
+            st.info("فعلاً موردی برای بررسی به شما ارجاع نشده است.")
+        else:
+            col_list, col_det = st.columns([1, 2])
+            
+            with col_list:
+                st.subheader("لیست ارجاعات")
+                for tk in tasks:
+                    if st.button(f"📄 {tk[1]}\n(فرستنده: {tk[4]})", key=f"tk_{tk[0]}", use_container_width=True):
+                        st.session_state.selected_submission_id = tk[0]
+            
+            with col_det:
+                if st.session_state.selected_submission_id:
+                    # پیدا کردن جزییات از لیست (tk در حلقه بالا نیست، پس باید دوباره پیدا کرد یا از لیست کشید)
+                    target = [t for t in tasks if t[0] == st.session_state.selected_submission_id][0]
+                    (sid, title, desc, s_ph, s_nm, s_ni, tid, field, ctype, fname, fmime, fbytes, 
+                     status, score, likes, views, kcode, fb, ar_ph, ar_nm, cts) = target
+                    
+                    st.subheader(f"بررسی: {title}")
+                    st.write(f"**توضیحات:** {desc}")
+                    if fbytes:
+                        st.download_button("📩 دانلود فایل محتوا", fbytes, fname, key=f"dl_{sid}")
+                    
                     st.divider()
-
-                    new_status = st.selectbox(
-                        "نتیجه داوری",
-                        ["waiting_referee", "correction_needed", "published", "rejected"],
-                        format_func=status_fa,
-                        key=f"ns_{s.id}"
-                    )
-                    feedback = st.text_area("ثبت اصلاحات / نظر داور", value=s.referee_feedback, height=120, key=f"fb_{s.id}")
-                    score = st.number_input("امتیاز (0 تا 100)", 0, 100, int(s.score or 0), key=f"sc_{s.id}")
-                    kcode = st.text_input("کد دانشی (برای انتشار)", value=s.knowledge_code, key=f"kc_{s.id}")
-
-                    if st.button("ثبت نهایی داوری", type="primary", key=f"save_{s.id}"):
-                        s.status = new_status
-                        s.referee_feedback = feedback.strip()
-                        s.score = int(score)
-
-                        if new_status == "published" and not kcode.strip():
-                            st.error("برای انتشار باید کد دانشی وارد شود.")
-                            st.stop()
-                        s.knowledge_code = kcode.strip()
-                        st.success("ثبت شد ✅ (کاربر و مدیر نتیجه را می‌بینند)")
-                        st.rerun()
+                    new_status = st.selectbox("وضعیت بررسی", 
+                                             ["waiting_referee", "correction_needed", "published", "rejected"],
+                                             index=["waiting_referee", "correction_needed", "published", "rejected"].index(status),
+                                             format_func=status_fa)
+                    
+                    new_fb = st.text_area("نظرات اصلاحی / داوری", value=fb or "")
+                    new_score = st.number_input("امتیاز نخبگی (0-100)", 0, 100, int(score or 0))
+                    new_kcode = st.text_input("کد دانشی (الزامی برای انتشار در ویترین)", value=kcode or "")
+                    
+                    if st.button("ثبت نهایی نتیجه داوری", type="primary"):
+                        if new_status == "published" and not new_kcode.strip():
+                            st.error("برای انتشار در ویترین دانش، وارد کردن 'کد دانشی' الزامی است.")
+                        else:
+                            db_submission_update_review(sid, new_status, new_fb, new_score, new_kcode)
+                            st.success("داوری ثبت شد.")
+                            st.rerun()
+                else:
+                    st.info("یک مورد را از لیست سمت راست انتخاب کنید.")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================
-# Page: Forum
+# Page: Forum (تالار گفتگو)
 # =========================================================
 elif st.session_state.page == "تالار گفتگو":
     st.markdown('<div class="panel">', unsafe_allow_html=True)
-    st.header("تالار گفتگو")
-
-    st.caption("پیام‌ها ابتدا برای مدیر ارسال می‌شود و بعد از تایید در تالار نمایش داده می‌شود.")
-
-    msg = st.text_area("درج پیام در تالار گفتگو", placeholder="پیام خود را بنویسید...", height=120)
-
-    if st.button("ارسال پیام برای تایید مدیر", type="primary"):
-        if not msg.strip():
-            st.error("متن پیام خالی است.")
-        else:
-            st.session_state.forum_posts.insert(
-                0,
-                ForumPost(
-                    id=make_id("p"),
-                    sender_phone=st.session_state.phone,
-                    sender_name=st.session_state.name,
-                    sender_role=st.session_state.role,
-                    text=msg.strip(),
-                    ts=now_ts(),
-                    status="pending",
-                )
-            )
-            st.success("ارسال شد ✅ (بعد از تایید مدیر نمایش داده می‌شود)")
-            st.rerun()
+    st.header("تالار گفتگو و پرسش پاسخ")
+    
+    st.caption("پیام شما پس از تایید مدیر برای همه نمایش داده خواهد شد.")
+    f_msg = st.text_area("پیام یا سوال خود را بنویسید...")
+    if st.button("ارسال برای تایید", type="primary"):
+        if f_msg.strip():
+            db_forum_post_add(make_id("fp"), st.session_state.phone, st.session_state.name, st.session_state.role, f_msg)
+            st.success("ارسال شد. منتظر تایید مدیر باشید.")
+        else: st.error("متن پیام خالی است")
 
     st.divider()
-
-    approved = [p for p in st.session_state.forum_posts if p.status == "approved"]
-    if not approved:
-        st.info("هنوز پیامی تایید نشده.")
-    else:
-        for p in approved:
-            with st.container(border=True):
-                st.write(f"**{p.sender_name}**: {p.text}")
-                st.caption(f"{ts_str(p.ts)} | نقش: {p.sender_role}")
-
-                st.subheader("پاسخ داور تخصصی / نخبگان")
-
-                # پاسخ‌دهی داور: باکس بالا (طبق خواسته)
-                if st.session_state.role == "referee":
-                    reply = st.text_input("پاسخ شما", key=f"rep_{p.id}", placeholder="پاسخ را بنویسید...")
-                    if st.button("ثبت پاسخ", key=f"rep_btn_{p.id}", type="primary"):
-                        if reply.strip():
-                            p.replies.append(
-                                ForumReply(
-                                    id=make_id("rr"),
-                                    referee_phone=st.session_state.phone,
-                                    referee_name=st.session_state.name,
-                                    text=reply.strip(),
-                                    ts=now_ts(),
-                                )
-                            )
-                            st.success("پاسخ ثبت شد ✅")
-                            st.rerun()
-
-                # لیست پاسخ‌ها
-                if p.replies:
-                    for r in sorted(p.replies, key=lambda x: x.ts):
-                        st.write(f"- **{r.referee_name}**: {r.text}")
-                        st.caption(ts_str(r.ts))
-                else:
-                    st.caption("هنوز پاسخی ثبت نشده.")
-
-    # مدیر: تایید/رد پیام‌های pending (اینجا هم گذاشتم که از صفحه اصلی هم نیاز نباشه)
-    if is_admin():
-        st.divider()
-        st.header("تایید پیام‌ها (مدیر سامانه)")
-        pend = [pp for pp in st.session_state.forum_posts if pp.status == "pending"]
-        if not pend:
-            st.info("پیامی برای تایید وجود ندارد.")
-        else:
-            for pp in pend:
-                with st.container(border=True):
-                    st.write(f"**از:** {pp.sender_name} ({pp.sender_role}) | {ts_str(pp.ts)}")
-                    st.write(pp.text)
-                    a, b = st.columns(2)
-                    with a:
-                        if st.button("تایید", key=f"ap_forum_{pp.id}", type="primary"):
-                            pp.status = "approved"
-                            st.success("تایید شد ✅")
-                            st.rerun()
-                    with b:
-                        if st.button("رد", key=f"rej_forum_{pp.id}"):
-                            pp.status = "rejected"
-                            st.warning("رد شد")
-                            st.rerun()
+    
+    # نمایش پیام های تایید شده
+    approved_posts = db_forum_posts("approved")
+    for ap in approved_posts:
+        with st.container(border=True):
+            st.write(f"👤 **{ap[2]}** ({ap[3]})")
+            st.write(ap[4])
+            st.caption(f"زمان: {time.strftime('%Y-%m-%d %H:%M', time.localtime(ap[6]))}")
+            
+            # پاسخ‌های داوران
+            replies = db_forum_replies(ap[0])
+            for rep in replies:
+                st.markdown(f"""
+                <div style="background:#f0f7ff; padding:10px; border-right:4px solid #007bff; margin:5px 0; border-radius:5px;">
+                <b>👨‍🏫 پاسخ {rep[2]}:</b><br>{rep[3]}
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # اجازه پاسخ به داوران
+            if st.session_state.role == "referee":
+                r_text = st.text_input("پاسخ داور به این سوال", key=f"rinput_{ap[0]}")
+                if st.button("ثبت پاسخ داور", key=f"rbtn_{ap[0]}"):
+                    db_forum_reply_add(make_id("fr"), ap[0], st.session_state.phone, st.session_state.name, r_text)
+                    st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================
-# Page: Profile
+# Page: Documents (اسناد)
+# =========================================================
+elif st.session_state.page == "اسناد":
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.header("کتابخانه اسناد و نشریات")
+    docs = db_docs_all()
+    if not docs:
+        st.info("سندی بارگذاری نشده است.")
+    else:
+        for d in docs:
+            (did, dtitle, dfname, dfbytes, dts) = d
+            with st.container(border=True):
+                col_d1, col_d2 = st.columns([4, 1])
+                col_d1.write(f"📄 **{dtitle}**")
+                col_d1.caption(f"فایل: {dfname}")
+                col_d2.download_button("دریافت", dfbytes, dfname, key=f"dldoc_{did}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================================
+# Page: Profile (پروفایل)
 # =========================================================
 elif st.session_state.page == "پروفایل":
     st.markdown('<div class="panel">', unsafe_allow_html=True)
-    st.header("پروفایل")
-    st.text_input("نام و نام خانوادگی", value=st.session_state.name, disabled=True)
-    st.text_input("شماره همراه", value=st.session_state.phone, disabled=True)
-    st.text_input("کد ملی", value=st.session_state.nid, disabled=True)
-    st.caption(f"نقش: {st.session_state.role}")
-    if st.button("🚪 خروج از سامانه", type="primary"):
+    st.header("مشخصات کاربری")
+    st.write(f"🆔 **نام:** {st.session_state.name}")
+    st.write(f"📞 **شماره تماس:** {st.session_state.phone}")
+    st.write(f"🪪 **کد ملی:** {st.session_state.nid}")
+    st.write(f"🎭 **نقش در سامانه:** {st.session_state.role}")
+    st.divider()
+    if st.button("🚪 خروج از حساب کاربری", type="primary"):
         logout()
     st.markdown("</div>", unsafe_allow_html=True)
 
-# =========================================================
-# Page: Documents
-# =========================================================
-else:  # اسناد
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-    st.header("اسناد")
-
-    if not is_admin():
-        st.warning("این بخش فقط برای مدیر سامانه فعال است.")
-        st.markdown("</div>", unsafe_allow_html=True)
-    else:
-        st.subheader("بارگذاری اسناد/نشریه‌ها (مدیر)")
-        doc_title = st.text_input("عنوان سند", key="doc_title_page")
-        doc_file = st.file_uploader("فایل سند/نشریه", key="doc_file_page")
-
-        if st.button("ثبت سند", type="primary", key="doc_save_page"):
-            if not doc_title.strip() or not doc_file:
-                st.error("عنوان و فایل سند الزامی است.")
-            else:
-                st.session_state.documents.insert(
-                    0,
-                    DocumentItem(
-                        id=make_id("d"),
-                        title=doc_title.strip(),
-                        file_name=doc_file.name,
-                        file_bytes=doc_file.getvalue(),
-                        ts=now_ts(),
-                    )
-                )
-                st.success("سند ثبت شد ✅")
-                st.rerun()
-
-        st.divider()
-        if not st.session_state.documents:
-            st.info("سندی ثبت نشده.")
-        else:
-            for d in st.session_state.documents:
-                with st.container(border=True):
-                    st.write(f"**{d.title}**")
-                    st.caption(f"{d.file_name} | {ts_str(d.ts)}")
-                    st.download_button("دانلود", data=d.file_bytes, file_name=d.file_name, key=f"dl_doc_page_{d.id}")
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-st.markdown("</div>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True) # پایان پوسته
