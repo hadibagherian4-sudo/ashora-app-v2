@@ -15,6 +15,12 @@ def _file_exists(path: str) -> bool:
     except Exception:
         return False
 
+def pick_existing(paths: List[str]) -> str:
+    for p in paths:
+        if p and _file_exists(p):
+            return p
+    return ""
+
 def normalize_phone(p: str) -> str:
     return re.sub(r"\s+", "", p.strip())
 
@@ -28,14 +34,43 @@ def make_id(prefix: str) -> str:
     st.session_state._id_counter += 1
     return f"{prefix}{st.session_state._id_counter}"
 
+def has_bad_words(text: str) -> bool:
+    bad_words = ["کص", "کیر", "کس", "جنده", "fuck", "shit", "bitch", "asshole"]
+    t = text.lower()
+    return any(w in t for w in bad_words)
+
+def status_fa(s: str) -> str:
+    return {
+        "pending": "در انتظار ارجاع مدیر سامانه",
+        "waiting_referee": "در انتظار نظر داور",
+        "correction_needed": "نیاز به اصلاح",
+        "published": "تایید و انتشار در ویترین دانش",
+        "rejected": "عدم تایید",
+    }.get(s, s)
+
+# =========================
+# Theme + Fonts
+# =========================
 def inject_theme():
-    btitr_path = "assets/fonts/BTitr.ttf"
-    bnazanin_path = "assets/fonts/BNazaninBold.ttf"
+    # فونت‌هایی که تو گفتی آپلود کردی:
+    # BNazanin.ttf و BTir.ttf
+    btitr_path = pick_existing([
+        "assets/fonts/BTir.ttf",
+        "BTir.ttf",
+        "assets/fonts/BTitr.ttf",
+        "BTitr.ttf",
+    ])
+    bnazanin_path = pick_existing([
+        "assets/fonts/BNazanin.ttf",
+        "BNazanin.ttf",
+        "assets/fonts/BNazaninBold.ttf",
+        "BNazaninBold.ttf",
+    ])
 
     btitr_css = ""
     bnazanin_css = ""
 
-    if _file_exists(btitr_path):
+    if btitr_path:
         with open(btitr_path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
         btitr_css = f"""
@@ -47,7 +82,7 @@ def inject_theme():
         }}
         """
 
-    if _file_exists(bnazanin_path):
+    if bnazanin_path:
         with open(bnazanin_path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
         bnazanin_css = f"""
@@ -69,13 +104,9 @@ def inject_theme():
           --navy: #061a2f;
           --navy2:#0b2a4a;
           --paper:#ffffff;
-          --paper2:#f5f7fb;
           --ink:#0b1220;
           --muted:#6b7280;
           --accent:#f6c445;
-          --good:#22c55e;
-          --warn:#f59e0b;
-          --bad:#ef4444;
         }}
 
         .stApp {{
@@ -85,12 +116,12 @@ def inject_theme():
         html, body, [class*="css"] {{
           direction: rtl;
           text-align: right;
-          font-family: {'BNazaninBold' if _file_exists(bnazanin_path) else 'Tahoma'} !important;
+          font-family: {"BNazaninBold" if bnazanin_path else "Tahoma"} !important;
         }}
 
         h1,h2,h3 {{
           text-align: center !important;
-          font-family: {'BTitr' if _file_exists(btitr_path) else 'Tahoma'} !important;
+          font-family: {"BTitr" if btitr_path else "Tahoma"} !important;
           color: var(--ink) !important;
         }}
 
@@ -115,7 +146,7 @@ def inject_theme():
           gap: 16px;
         }}
         .nexa-title {{
-          font-family: {'BTitr' if _file_exists(btitr_path) else 'Tahoma'} !important;
+          font-family: {"BTitr" if btitr_path else "Tahoma"} !important;
           font-size: 34px;
           font-weight: 900;
           color: #fff;
@@ -134,11 +165,6 @@ def inject_theme():
           border-radius: 16px;
           padding: 18px;
           border: 1px solid rgba(15, 23, 42, 0.10);
-        }}
-
-        .soft {{
-          color: rgba(255,255,255,0.75) !important;
-          text-align:center;
         }}
 
         .bottom-nav {{
@@ -166,16 +192,6 @@ def inject_theme():
         .stButton > button[kind="primary"] {{
           background: var(--accent) !important;
           color: #111827 !important;
-        }}
-
-        .stTabs [data-baseweb="tab-list"] {{
-          justify-content: center;
-          gap: 10px;
-        }}
-        .stTabs [data-baseweb="tab"] {{
-          border-radius: 12px;
-          background: rgba(2, 6, 23, 0.04);
-          padding: 10px 14px;
         }}
         </style>
         """,
@@ -205,7 +221,7 @@ class Submission:
     file_name: str
     file_bytes: bytes | None
     cover_image_path: str
-    status: str = "pending"  # pending, waiting_referee, correction_needed, published, rejected
+    status: str = "pending"
     score: int = 0
     likes: int = 0
     views: int = 0
@@ -239,7 +255,7 @@ class ForumPost:
     sender_name: str
     text: str
     ts: float
-    status: str = "pending"   # pending -> approved/rejected
+    status: str = "pending"   # pending/approved/rejected
     moderator_note: str = ""
     replies: List[ForumReply] = field(default_factory=list)
 
@@ -299,21 +315,6 @@ CONTENT_TYPES = [
     "سایر",
 ]
 
-BAD_WORDS = ["کص", "کیر", "کس", "جنده", "fuck", "shit", "bitch", "asshole"]
-
-def has_bad_words(text: str) -> bool:
-    t = text.lower()
-    return any(w in t for w in BAD_WORDS)
-
-def status_fa(s: str) -> str:
-    return {
-        "pending": "در انتظار ارجاع مدیر سامانه",
-        "waiting_referee": "در انتظار نظر داور",
-        "correction_needed": "نیاز به اصلاح",
-        "published": "تایید و انتشار در ویترین دانش",
-        "rejected": "عدم تایید",
-    }.get(s, s)
-
 # =========================
 # State
 # =========================
@@ -321,14 +322,14 @@ def ensure_state():
     st.session_state.setdefault("_id_counter", 1000)
 
     st.session_state.setdefault("logged_in", False)
-    st.session_state.setdefault("role", "guest")  # user/manager/referee
+    st.session_state.setdefault("role", "guest")
     st.session_state.setdefault("phone", "")
     st.session_state.setdefault("nid", "")
     st.session_state.setdefault("name", "")
 
-    st.session_state.setdefault("users", {})  # phone -> {name,nid}
+    st.session_state.setdefault("users", {})
 
-    # manager credentials (fixed)
+    # manager fixed
     st.session_state.setdefault("manager_phone", "09146862029")
     st.session_state.setdefault("manager_nid", "1362362506")
 
@@ -340,6 +341,8 @@ def ensure_state():
     st.session_state.setdefault("research", [])
     st.session_state.setdefault("documents", [])
     st.session_state.setdefault("forum_posts", [])
+
+    cover_default = pick_existing(["Picture1.png", "official_logo.png", "logo.png"])
 
     st.session_state.setdefault("submissions", [
         Submission(
@@ -353,7 +356,7 @@ def ensure_state():
             content_type="نوشتاری",
             file_name="sample.pdf",
             file_bytes=None,
-            cover_image_path="Picture1.png" if _file_exists("Picture1.png") else "",
+            cover_image_path=cover_default,
             status="published",
             likes=25,
             views=500,
@@ -363,7 +366,6 @@ def ensure_state():
 
     st.session_state.setdefault("selected_submission_id", None)
     st.session_state.setdefault("page", "صفحه اصلی")
-
 
 def logout():
     st.session_state.logged_in = False
@@ -393,17 +395,16 @@ def get_topic(tid: str) -> Optional[TopicItem]:
     return None
 
 # =========================
-# App start
+# App
 # =========================
 st.set_page_config(page_title="NEXA", layout="wide")
 ensure_state()
 inject_theme()
 
-# shell start
 st.markdown('<div class="nexa-shell">', unsafe_allow_html=True)
 
-# header
-logo_path = "logo.png" if _file_exists("logo.png") else ("official_logo.png" if _file_exists("official_logo.png") else "")
+# Header
+logo_path = pick_existing(["logo.png", "official_logo.png"])
 logo_html = ""
 if logo_path:
     with open(logo_path, "rb") as f:
@@ -430,21 +431,17 @@ st.markdown(
 
 st.markdown('<div style="height:12px;"></div>', unsafe_allow_html=True)
 
-# =========================
 # Login
-# =========================
 if not st.session_state.logged_in:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.header("ورود به سامانه")
 
     role = st.selectbox("نوع کاربری", ["user", "referee", "manager"],
                         format_func=lambda x: {"user": "کاربر", "referee": "داور تخصصی / نخبگان دانشی", "manager": "مدیر سامانه"}[x])
-
     phone = st.text_input("شماره همراه")
     nid = st.text_input("کد ملی", type="password")
 
     c1, c2 = st.columns(2)
-
     with c1:
         if st.button("ورود", type="primary"):
             phone_n = normalize_phone(phone)
@@ -467,7 +464,7 @@ if not st.session_state.logged_in:
                     st.stop()
                 st.session_state.name = "مدیر سامانه"
 
-            else:  # referee
+            else:
                 ref = find_referee(phone_n, nid_n)
                 if not ref:
                     st.error("داور با این مشخصات ثبت نشده یا غیرفعال است.")
@@ -492,7 +489,6 @@ if not st.session_state.logged_in:
         name = st.text_input("نام و نام خانوادگی", key="su_name")
         phone_s = st.text_input("شماره همراه", key="su_phone")
         nid_s = st.text_input("کد ملی", key="su_nid", type="password")
-
         if st.button("ایجاد حساب", type="primary"):
             p = normalize_phone(phone_s)
             n = normalize_nid(nid_s)
@@ -507,9 +503,7 @@ if not st.session_state.logged_in:
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
-# =========================
-# Bottom Nav
-# =========================
+# Bottom nav
 nav_labels = ["صفحه اصلی", "تالار گفتگو", "پروفایل", "اسناد"]
 nav_icons = {"صفحه اصلی": "🏠", "تالار گفتگو": "💬", "پروفایل": "👤", "اسناد": "📄"}
 nav_display = [f"{nav_icons[x]} {x}" for x in nav_labels]
@@ -521,34 +515,31 @@ st.markdown("</div>", unsafe_allow_html=True)
 st.session_state.page = choice.split(" ", 1)[1]
 
 # =========================
-# Page: Home
+# Pages
 # =========================
 if st.session_state.page == "صفحه اصلی":
     st.markdown('<div class="panel">', unsafe_allow_html=True)
-
     role = st.session_state.role
 
-    # USER HOME
     if role == "user":
         t1, t2, t3, t4, t5 = st.tabs(["ویترین دانش", "ارسال محتوا", "وضعیت پیگیری", "پیشنهاد موضوعات", "تحقیقات صورت گرفته"])
 
-        # Showcase
         with t1:
             st.header("ویترین دانش")
             published = [s for s in st.session_state.submissions if s.status == "published"]
             if not published:
                 st.info("فعلاً محتوایی منتشر نشده.")
-
             for s in published:
                 with st.container(border=True):
                     s.views += 1
                     cover = s.cover_image_path
                     if cover and _file_exists(cover):
                         st.image(cover, use_container_width=True)
-                    elif _file_exists("Picture1.png"):
-                        st.image("Picture1.png", use_container_width=True)
+                    else:
+                        fallback = pick_existing(["Picture1.png", "logo.png", "official_logo.png"])
+                        if fallback:
+                            st.image(fallback, use_container_width=True)
 
-                    st.subheader(sس := s.title
                     st.subheader(s.title)
                     st.caption(f"{s.field} | نوع محتوا: {s.content_type} | کد دانشی: {s.knowledge_code or '-'} | بازدید: {s.views}")
                     st.write(s.description)
@@ -575,7 +566,6 @@ if st.session_state.page == "صفحه اصلی":
                             st.success("نظر ثبت شد ✅")
                             st.rerun()
 
-        # Submit
         with t2:
             st.header("ارسال محتوا")
             topic_options = ["(بدون انتخاب موضوع)"] + [f"{t.title} | {t.field}" for t in st.session_state.topics]
@@ -601,10 +591,8 @@ if st.session_state.page == "صفحه اصلی":
             desc = st.text_area("توضیحات", value=default_desc, height=120)
             field_sel = st.selectbox("حوزه پیشنهادی", FIELDS, index=FIELDS.index(default_field) if default_field in FIELDS else 0)
             content_type = st.selectbox("نوع محتوا", CONTENT_TYPES)
-
             uploaded = st.file_uploader("پیوست فایل", type=None)
 
-            # cover selection from repo (optional)
             cover_pick = st.selectbox("تصویر ویترین (اختیاری)", ["(خالی)", "Picture1.png", "official_logo.png", "logo.png"])
             cover_path = "" if cover_pick == "(خالی)" else cover_pick
             if cover_path and not _file_exists(cover_path):
@@ -636,7 +624,6 @@ if st.session_state.page == "صفحه اصلی":
                     st.success("ارسال شد ✅")
                     st.rerun()
 
-        # Tracking
         with t3:
             st.header("وضعیت پیگیری")
             my = [s for s in st.session_state.submissions if s.sender_phone == st.session_state.phone]
@@ -656,7 +643,6 @@ if st.session_state.page == "صفحه اصلی":
                         if s.status == "published":
                             st.write(f"کد دانشی: **{s.knowledge_code}**")
 
-        # Topics
         with t4:
             st.header("پیشنهاد موضوعات")
             if not st.session_state.topics:
@@ -670,7 +656,6 @@ if st.session_state.page == "صفحه اصلی":
                         if t.file_bytes:
                             st.download_button("دانلود پیوست", data=t.file_bytes, file_name=t.file_name, key=f"dl_t_{t.id}")
 
-        # Research
         with t5:
             st.header("تحقیقات صورت گرفته")
             if not st.session_state.research:
@@ -684,7 +669,6 @@ if st.session_state.page == "صفحه اصلی":
                         if r.file_bytes:
                             st.download_button("دانلود فایل", data=r.file_bytes, file_name=r.file_name, key=f"dl_r_{r.id}")
 
-    # MANAGER HOME
     elif role == "manager":
         t1, t2, t3, t4 = st.tabs(["میز ارجاع", "ثبت داور تخصصی", "پیشنهاد موضوعات", "تحقیقات صورت گرفته"])
 
@@ -697,7 +681,7 @@ if st.session_state.page == "صفحه اصلی":
                 for s in pending:
                     with st.container(border=True):
                         st.write(f"**{s.title}**")
-                        st.caption(f"فرستنده: {s.sender_name} ({s.sender_phone}) | حوزه پیشنهادی: {s.field} | نوع محتوا: {s.content_type}")
+                        st.caption(f"فرستنده: {s.sender_name} ({s.sender_phone}) | حوزه: {s.field} | نوع محتوا: {s.content_type}")
                         st.write(s.description)
                         if s.file_bytes:
                             st.download_button("دانلود فایل پیوست", data=s.file_bytes, file_name=s.file_name, key=f"dl_sub_{s.id}")
@@ -768,15 +752,17 @@ if st.session_state.page == "صفحه اصلی":
             field_sel = st.selectbox("حوزه", FIELDS, key="topic_field")
             desc = st.text_area("توضیحات", key="topic_desc", height=120)
             up = st.file_uploader("فایل پیوست (اختیاری)", key="topic_file")
-
             if st.button("ثبت موضوع", type="primary", key="topic_save"):
                 if not title.strip():
                     st.error("عنوان موضوع الزامی است.")
                 else:
                     fname = up.name if up else "N/A"
                     fbytes = up.getvalue() if up else None
-                    st.session_state.topics.insert(0, TopicItem(id=make_id("t"), title=title.strip(), field=field_sel,
-                                                              description=desc.strip(), file_name=fname, file_bytes=fbytes, ts=now_ts()))
+                    st.session_state.topics.insert(
+                        0,
+                        TopicItem(id=make_id("t"), title=title.strip(), field=field_sel, description=desc.strip(),
+                                  file_name=fname, file_bytes=fbytes, ts=now_ts())
+                    )
                     st.success("موضوع ثبت شد ✅")
                     st.rerun()
 
@@ -786,19 +772,20 @@ if st.session_state.page == "صفحه اصلی":
             field_sel = st.selectbox("حوزه", FIELDS, key="res_field")
             summary = st.text_area("خلاصه / توضیحات", key="res_sum", height=120)
             up = st.file_uploader("فایل تحقیق (اختیاری)", key="res_file")
-
             if st.button("ثبت تحقیق", type="primary", key="res_save"):
                 if not title.strip():
                     st.error("عنوان تحقیق الزامی است.")
                 else:
                     fname = up.name if up else "N/A"
                     fbytes = up.getvalue() if up else None
-                    st.session_state.research.insert(0, ResearchItem(id=make_id("r"), title=title.strip(), field=field_sel,
-                                                                    summary=summary.strip(), file_name=fname, file_bytes=fbytes, ts=now_ts()))
+                    st.session_state.research.insert(
+                        0,
+                        ResearchItem(id=make_id("r"), title=title.strip(), field=field_sel, summary=summary.strip(),
+                                     file_name=fname, file_bytes=fbytes, ts=now_ts())
+                    )
                     st.success("تحقیق ثبت شد ✅")
                     st.rerun()
 
-    # REFEREE HOME
     else:
         st.header("پنل داور تخصصی / نخبگان دانشی")
         mine = [s for s in st.session_state.submissions if normalize_phone(s.assigned_referee_phone) == normalize_phone(st.session_state.phone)]
@@ -825,7 +812,6 @@ if st.session_state.page == "صفحه اصلی":
                     st.write(f"ارسال‌کننده: **{s.sender_name}** ({s.sender_phone})")
                     st.write(f"حوزه: **{s.field}** | نوع محتوا: **{s.content_type}**")
                     st.write(s.description)
-
                     if s.file_bytes:
                         st.download_button("دانلود فایل پیوست", data=s.file_bytes, file_name=s.file_name, key=f"dl_ref_{s.id}")
 
@@ -849,9 +835,6 @@ if st.session_state.page == "صفحه اصلی":
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# =========================
-# Page: Forum
-# =========================
 elif st.session_state.page == "تالار گفتگو":
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.header("تالار گفتگو")
@@ -887,6 +870,7 @@ elif st.session_state.page == "تالار گفتگو":
             with st.container(border=True):
                 st.write(f"**{p.sender_name}**: {p.text}")
                 st.caption(time.strftime("%Y-%m-%d %H:%M", time.localtime(p.ts)))
+
                 st.subheader("پاسخ داور تخصصی / نخبگان")
                 if p.replies:
                     for r in sorted(p.replies, key=lambda x: x.ts):
@@ -929,9 +913,6 @@ elif st.session_state.page == "تالار گفتگو":
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# =========================
-# Page: Profile
-# =========================
 elif st.session_state.page == "پروفایل":
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.header("پروفایل")
@@ -942,20 +923,15 @@ elif st.session_state.page == "پروفایل":
         logout()
     st.markdown("</div>", unsafe_allow_html=True)
 
-# =========================
-# Page: Documents (Manager only)
-# =========================
 else:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.header("اسناد")
 
     if st.session_state.role != "manager":
         st.warning("این بخش فقط برای مدیر سامانه فعال است.")
-        st.markdown("</div>", unsafe_allow_html=True)
     else:
         title = st.text_input("عنوان سند")
         up = st.file_uploader("فایل سند/نشریه", type=None)
-
         if st.button("ثبت سند", type="primary"):
             if not title.strip() or not up:
                 st.error("عنوان و فایل سند الزامی است.")
@@ -977,7 +953,7 @@ else:
                     st.caption(d.file_name)
                     st.download_button("دانلود", data=d.file_bytes, file_name=d.file_name, key=f"dl_doc_{d.id}")
 
-        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # close shell
 st.markdown("</div>", unsafe_allow_html=True)
