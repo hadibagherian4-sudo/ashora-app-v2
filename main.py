@@ -1392,73 +1392,83 @@ with tabs[3]:
     st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================
-# PAGE: FORUM (تالار گفتگو و پرسش و پاسخ)
+# Page: Forum
 # =========================================================
 elif st.session_state.page == "تالار گفتگو":
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.header("تالار گفتگو و پرسش و پاسخ")
-    st.caption("پرسش‌های خود را مطرح کنید. پیام‌ها پس از تایید مدیر برای همگان قابل مشاهده است.")
 
-    with st.form("forum_post_form"):
-        f_text = st.text_area("متن سوال یا پیام جدید شما...")
-        if st.form_submit_button("ارسال پرسش برای مدیر"):
-            if f_text.strip():
-                db_forum_post_add(make_id("fp"), st.session_state.phone, st.session_state.name, st.session_state.role, f_text.strip())
-                st.success("ارسال شد. منتظر تایید مدیر باشید ✅")
-            else:
-                st.error("متن پیام نمی‌تواند خالی باشد.")
+    st.caption("پیام شما پس از تایید مدیر برای همه نمایش داده خواهد شد.")
+    f_msg = st.text_area("پیام یا سوال خود را بنویسید...", height=120)
+
+    if st.button("ارسال برای تایید", type="primary"):
+        if f_msg.strip():
+            db_forum_post_add(
+                make_id("fp"),
+                st.session_state.phone,
+                st.session_state.name,
+                st.session_state.role,
+                f_msg.strip()
+            )
+            st.success("ارسال شد ✅ منتظر تایید مدیر باشید.")
+            st.rerun()
+        else:
+            st.error("متن پیام خالی است.")
 
     st.divider()
 
-    # نمایش پست‌های تایید شده برای همه
-    posts = db_forum_posts("approved")
-    if not posts:
-        st.info("هنوز گفتگویی در تالار تایید نشده است.")
+    approved_posts = db_forum_posts("approved")
+    if not approved_posts:
+        st.info("هنوز پیامی تایید نشده.")
     else:
-        for p in posts:
+        for ap in approved_posts:
+            post_id = ap[0]
+            sender_name = ap[2]
+            sender_role = ap[3]
+            text = ap[4]
+            created_ts = ap[6]
+
             with st.container(border=True):
-                st.write(f"👤 **{p[2]}** ({status_fa(p[3])}) | {ts_str(p[6])}")
-                st.info(p[4])
-                
-                # نمایش پاسخ‌های نخبگان (به صورت کامنت برای همه)
-                reps = db_forum_replies(p[0])
-                if reps:
-                    st.write("**👨‍🏫 پاسخ‌های تخصصی نخبگان و داوران:**")
-                    for r in reps:
-                        st.markdown(f"""
-                        <div style="background:#f0f7ff; padding:10px; border-right:4px solid var(--accent); margin:5px 0; border-radius:5px;">
-                        <b>داور ({r[3]}):</b> {r[4]}
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-                # ثبت پاسخ (مخصوص داوران)
+                st.write(f"👤 **{sender_name}** ({sender_role})")
+                st.write(text)
+                st.caption(f"زمان: {ts_str(created_ts)}")
+                # Replies
+                replies = db_forum_replies(post_id)
+                if replies:
+                    st.subheader("پاسخ‌ها")
+                    for rep in replies:
+                        rep_name = rep[2]
+                        rep_text = rep[3]
+                        rep_ts = rep[4]
+                        st.markdown(
+                            f"""
+                            <div style="background:#f0f7ff; padding:10px; border-right:4px solid #0b2a4a; margin:6px 0; border-radius:10px;">
+                              <b>👨‍🏫 {rep_name}:</b><br>{rep_text}
+                              <div style="font-size:12px; margin-top:6px; color:#334155;">{ts_str(rep_ts)}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+
+                # Referee can reply publicly
                 if st.session_state.role == "referee":
-                    with st.expander("✍️ پاسخ شما به عنوان داور"):
-                        rep_text = st.text_input("متن پاسخ", key=f"rtxt_{p[0]}")
-                        if st.button("ثبت پاسخ عمومی", key=f"rbtn_{p[0]}", type="primary"):
-                            if rep_text:
-                                db_forum_reply_add(make_id("fr"), p[0], st.session_state.phone, st.session_state.name, rep_text)
-                                st.rerun()
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-# =========================================================
-# PAGE: DOCUMENTS (اسناد)
-# =========================================================
-elif st.session_state.page == "اسناد":
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-    st.header("کتابخانه اسناد و نشریات")
-    docs = db_docs_all()
-    if not docs:
-        st.info("سندی یافت نشد.")
-    else:
-        for d in docs:
-            # (id[0], title[1], fname[2], fbytes[3], ts[4])
-            with st.container(border=True):
-                col_d1, col_d2 = st.columns([4, 1])
-                col_d1.write(f"📄 **{d[1]}**")
-                col_d1.caption(f"نام فایل: {d[2]} | زمان بارگذاری: {ts_str(d[4])}")
-                col_d2.download_button("دریافت فایل", data=d[3], file_name=d[2], key=f"doc_dl_{d[0]}", use_container_width=True)
+                    st.divider()
+                    r_text = st.text_input("پاسخ داور به این سوال", key=f"rinput_{post_id}")
+                    btn_key = f"btn_rep_{post_id}"
+                    if st.button("ثبت پاسخ نخبگان ✅", key=btn_key, type="primary"):
+                        if r_text.strip():
+                            db_forum_reply_add(
+                                make_id("fr"),
+                                post_id,
+                                st.session_state.phone,
+                                st.session_state.name,
+                                r_text.strip()
+                            )
+                            st.success("پاسخ شما ثبت شد و برای همه قابل مشاهده است ✅")
+                            time.sleep(0.5)
+                            st.rerun()
+                        else:
+                            st.error("متن پاسخ نمی‌تواند خالی باشد.")
     st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================
