@@ -34,11 +34,6 @@ def make_id(prefix: str) -> str:
     st.session_state._id_counter += 1
     return f"{prefix}{st.session_state._id_counter}"
 
-def has_bad_words(text: str) -> bool:
-    bad_words = ["کص", "کیر", "کس", "جنده", "fuck", "shit", "bitch", "asshole"]
-    t = text.lower()
-    return any(w in t for w in bad_words)
-
 def status_fa(s: str) -> str:
     return {
         "pending": "در انتظار ارجاع مدیر سامانه",
@@ -52,8 +47,7 @@ def status_fa(s: str) -> str:
 # Theme + Fonts
 # =========================
 def inject_theme():
-    # فونت‌هایی که تو گفتی آپلود کردی:
-    # BNazanin.ttf و BTir.ttf
+    # Support both: assets/fonts or root
     btitr_path = pick_existing([
         "assets/fonts/BTir.ttf",
         "BTir.ttf",
@@ -238,6 +232,7 @@ class RefereeProfile:
     phone: str
     national_id: str
     field: str
+    password: str
     is_active: bool = True
 
 @dataclass
@@ -327,14 +322,16 @@ def ensure_state():
     st.session_state.setdefault("nid", "")
     st.session_state.setdefault("name", "")
 
+    # users: phone -> {name, nid, password}
     st.session_state.setdefault("users", {})
 
     # manager fixed
     st.session_state.setdefault("manager_phone", "09146862029")
     st.session_state.setdefault("manager_nid", "1362362506")
+    st.session_state.setdefault("manager_password", "1234")  # اگر خواستی عوضش کن
 
     st.session_state.setdefault("referees", [
-        RefereeProfile(first_name="استاد", last_name="نمونه", phone="0912", national_id="123", field="۲. حوزه فنی و مهندسی")
+        RefereeProfile(first_name="استاد", last_name="نمونه", phone="0912", national_id="123", field="۲. حوزه فنی و مهندسی", password="1234")
     ])
 
     st.session_state.setdefault("topics", [])
@@ -376,9 +373,9 @@ def logout():
     st.session_state.selected_submission_id = None
     st.rerun()
 
-def find_referee(phone: str, nid: str) -> Optional[RefereeProfile]:
+def find_referee(phone: str, password: str) -> Optional[RefereeProfile]:
     for r in st.session_state.referees:
-        if normalize_phone(r.phone) == normalize_phone(phone) and normalize_nid(r.national_id) == normalize_nid(nid) and r.is_active:
+        if normalize_phone(r.phone) == normalize_phone(phone) and r.password == password and r.is_active:
             return r
     return None
 
@@ -393,6 +390,9 @@ def get_topic(tid: str) -> Optional[TopicItem]:
         if t.id == tid:
             return t
     return None
+
+def is_admin() -> bool:
+    return st.session_state.role == "manager"
 
 # =========================
 # App
@@ -431,50 +431,56 @@ st.markdown(
 
 st.markdown('<div style="height:12px;"></div>', unsafe_allow_html=True)
 
+# =========================
 # Login
+# =========================
 if not st.session_state.logged_in:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.header("ورود به سامانه")
 
-    role = st.selectbox("نوع کاربری", ["user", "referee", "manager"],
-                        format_func=lambda x: {"user": "کاربر", "referee": "داور تخصصی / نخبگان دانشی", "manager": "مدیر سامانه"}[x])
+    role = st.selectbox(
+        "نوع کاربری",
+        ["user", "referee", "manager"],
+        format_func=lambda x: {"user": "کاربر", "referee": "داور تخصصی / نخبگان دانشی", "manager": "مدیر سامانه"}[x],
+    )
+
     phone = st.text_input("شماره همراه")
-    nid = st.text_input("کد ملی", type="password")
+    password = st.text_input("رمز عبور", type="password")
 
     c1, c2 = st.columns(2)
     with c1:
         if st.button("ورود", type="primary"):
             phone_n = normalize_phone(phone)
-            nid_n = normalize_nid(nid)
-
-            if not phone_n or not nid_n:
-                st.error("شماره همراه و کد ملی را وارد کنید.")
+            if not phone_n or not password:
+                st.error("شماره همراه و رمز عبور را وارد کنید.")
                 st.stop()
 
             if role == "user":
                 u = st.session_state.users.get(phone_n)
-                if not u or normalize_nid(u["nid"]) != nid_n:
-                    st.error("کاربر یافت نشد. لطفاً ثبت‌نام کنید.")
+                if not u or u["password"] != password:
+                    st.error("کاربر یافت نشد یا رمز عبور اشتباه است. لطفاً ثبت‌نام کنید.")
                     st.stop()
                 st.session_state.name = u["name"]
+                st.session_state.nid = u["nid"]
 
             elif role == "manager":
-                if phone_n != normalize_phone(st.session_state.manager_phone) or nid_n != normalize_nid(st.session_state.manager_nid):
+                if phone_n != normalize_phone(st.session_state.manager_phone) or password != st.session_state.manager_password:
                     st.error("مشخصات مدیر سامانه اشتباه است.")
                     st.stop()
                 st.session_state.name = "مدیر سامانه"
+                st.session_state.nid = st.session_state.manager_nid
 
             else:
-                ref = find_referee(phone_n, nid_n)
+                ref = find_referee(phone_n, password)
                 if not ref:
-                    st.error("داور با این مشخصات ثبت نشده یا غیرفعال است.")
+                    st.error("داور یافت نشد یا رمز عبور اشتباه است.")
                     st.stop()
                 st.session_state.name = f"{ref.first_name} {ref.last_name}"
+                st.session_state.nid = ref.national_id
 
             st.session_state.logged_in = True
             st.session_state.role = role
             st.session_state.phone = phone_n
-            st.session_state.nid = nid_n
             st.success("ورود انجام شد ✅")
             st.rerun()
 
@@ -488,22 +494,30 @@ if not st.session_state.logged_in:
         st.subheader("ثبت‌نام کاربر")
         name = st.text_input("نام و نام خانوادگی", key="su_name")
         phone_s = st.text_input("شماره همراه", key="su_phone")
-        nid_s = st.text_input("کد ملی", key="su_nid", type="password")
+        nid_s = st.text_input("کد ملی", key="su_nid")
+        pass1 = st.text_input("رمز عبور", key="su_pass1", type="password")
+        pass2 = st.text_input("تکرار رمز عبور", key="su_pass2", type="password")
+
         if st.button("ایجاد حساب", type="primary"):
             p = normalize_phone(phone_s)
             n = normalize_nid(nid_s)
-            if not name.strip() or not p or not n:
-                st.error("نام، شماره همراه و کد ملی الزامی است.")
+            if not name.strip() or not p or not n or not pass1:
+                st.error("همه فیلدها الزامی است.")
                 st.stop()
-            st.session_state.users[p] = {"name": name.strip(), "nid": n}
-            st.success("ثبت‌نام انجام شد ✅")
+            if pass1 != pass2:
+                st.error("رمز عبور و تکرار آن یکسان نیست.")
+                st.stop()
+            st.session_state.users[p] = {"name": name.strip(), "nid": n, "password": pass1}
+            st.success("ثبت‌نام انجام شد ✅ حالا می‌تونی وارد بشی")
             st.session_state._show_signup = False
 
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
+# =========================
 # Bottom nav
+# =========================
 nav_labels = ["صفحه اصلی", "تالار گفتگو", "پروفایل", "اسناد"]
 nav_icons = {"صفحه اصلی": "🏠", "تالار گفتگو": "💬", "پروفایل": "👤", "اسناد": "📄"}
 nav_display = [f"{nav_icons[x]} {x}" for x in nav_labels]
@@ -515,12 +529,16 @@ st.markdown("</div>", unsafe_allow_html=True)
 st.session_state.page = choice.split(" ", 1)[1]
 
 # =========================
-# Pages
+# Page: Home
 # =========================
 if st.session_state.page == "صفحه اصلی":
     st.markdown('<div class="panel">', unsafe_allow_html=True)
+
     role = st.session_state.role
 
+    # =========================
+    # USER HOME
+    # =========================
     if role == "user":
         t1, t2, t3, t4, t5 = st.tabs(["ویترین دانش", "ارسال محتوا", "وضعیت پیگیری", "پیشنهاد موضوعات", "تحقیقات صورت گرفته"])
 
@@ -529,6 +547,7 @@ if st.session_state.page == "صفحه اصلی":
             published = [s for s in st.session_state.submissions if s.status == "published"]
             if not published:
                 st.info("فعلاً محتوایی منتشر نشده.")
+
             for s in published:
                 with st.container(border=True):
                     s.views += 1
@@ -544,13 +563,9 @@ if st.session_state.page == "صفحه اصلی":
                     st.caption(f"{s.field} | نوع محتوا: {s.content_type} | کد دانشی: {s.knowledge_code or '-'} | بازدید: {s.views}")
                     st.write(s.description)
 
-                    c1, c2 = st.columns([1, 3])
-                    with c1:
-                        if st.button(f"❤️ لایک ({s.likes})", key=f"like_{s.id}"):
-                            s.likes += 1
-                            st.rerun()
-                    with c2:
-                        st.write("")
+                    if st.button(f"❤️ لایک ({s.likes})", key=f"like_{s.id}"):
+                        s.likes += 1
+                        st.rerun()
 
                     st.subheader("نظرات")
                     if s.comments:
@@ -589,7 +604,7 @@ if st.session_state.page == "صفحه اصلی":
 
             title = st.text_input("عنوان", value=default_title)
             desc = st.text_area("توضیحات", value=default_desc, height=120)
-            field_sel = st.selectbox("حوزه پیشنهادی", FIELDS, index=FIELDS.index(default_field) if default_field in FIELDS else 0)
+            field_sel = st.selectbox("کمیته / حوزه تخصصی", FIELDS, index=FIELDS.index(default_field) if default_field in FIELDS else 0)
             content_type = st.selectbox("نوع محتوا", CONTENT_TYPES)
             uploaded = st.file_uploader("پیوست فایل", type=None)
 
@@ -669,11 +684,40 @@ if st.session_state.page == "صفحه اصلی":
                         if r.file_bytes:
                             st.download_button("دانلود فایل", data=r.file_bytes, file_name=r.file_name, key=f"dl_r_{r.id}")
 
+    # =========================
+    # MANAGER HOME (SUPER ADMIN)
+    # =========================
     elif role == "manager":
-        t1, t2, t3, t4 = st.tabs(["میز ارجاع", "ثبت داور تخصصی", "پیشنهاد موضوعات", "تحقیقات صورت گرفته"])
+        st.header("پنل مدیر سامانه (سوپرادمین)")
+
+        t0, t1, t2, t3, t4 = st.tabs(["مدیریت ویترین", "میز ارجاع", "ثبت داور", "پیشنهاد موضوعات", "تحقیقات"])
+
+        # Admin: manage showcase comments
+        with t0:
+            st.subheader("مدیریت ویترین دانش (حذف کامنت‌ها)")
+            published = [s for s in st.session_state.submissions if s.status == "published"]
+            if not published:
+                st.info("محتوای منتشر شده‌ای وجود ندارد.")
+            else:
+                for s in published:
+                    with st.container(border=True):
+                        st.write(f"**{s.title}**")
+                        st.caption(f"کد دانشی: {s.knowledge_code or '-'}")
+                        if not s.comments:
+                            st.caption("کامنت ندارد.")
+                        else:
+                            for idx, cm in enumerate(list(s.comments)):
+                                c1, c2 = st.columns([4, 1])
+                                with c1:
+                                    st.write(f"- **{cm.user}**: {cm.text}")
+                                with c2:
+                                    if st.button("🗑 حذف", key=f"del_cmt_{s.id}_{cm.id}"):
+                                        s.comments.pop(idx)
+                                        st.success("کامنت حذف شد ✅")
+                                        st.rerun()
 
         with t1:
-            st.header("میز ارجاع مدیر سامانه")
+            st.subheader("میز ارجاع مدیر سامانه")
             pending = [s for s in st.session_state.submissions if s.status == "pending"]
             if not pending:
                 st.info("موردی برای ارجاع نیست.")
@@ -704,7 +748,7 @@ if st.session_state.page == "صفحه اصلی":
                                 st.rerun()
 
         with t2:
-            st.header("ثبت داور تخصصی / نخبگان دانشی")
+            st.subheader("ثبت داور تخصصی / نخبگان دانشی (با رمز عبور)")
             c1, c2 = st.columns(2)
             with c1:
                 first = st.text_input("نام", key="rf_first")
@@ -712,15 +756,16 @@ if st.session_state.page == "صفحه اصلی":
                 field_sel = st.selectbox("حوزه فعالیت داوری", FIELDS, key="rf_field")
             with c2:
                 last = st.text_input("نام خانوادگی", key="rf_last")
-                nid = st.text_input("کد ملی (ID ورود)", key="rf_nid", type="password")
+                nid = st.text_input("کد ملی", key="rf_nid")
+                ref_pass = st.text_input("رمز عبور داور", key="rf_pass", type="password")
 
             active = st.checkbox("فعال باشد", value=True)
 
             if st.button("ساخت حساب داوری و تایید نهایی", type="primary"):
                 p = normalize_phone(phone)
                 n = normalize_nid(nid)
-                if not p or not n:
-                    st.error("شماره همراه و کد ملی الزامی است.")
+                if not p or not n or not ref_pass:
+                    st.error("شماره همراه، کد ملی و رمز عبور الزامی است.")
                 else:
                     updated = False
                     for r in st.session_state.referees:
@@ -729,6 +774,7 @@ if st.session_state.page == "صفحه اصلی":
                             r.last_name = last.strip() or r.last_name
                             r.national_id = n
                             r.field = field_sel
+                            r.password = ref_pass
                             r.is_active = active
                             updated = True
                             break
@@ -740,6 +786,7 @@ if st.session_state.page == "صفحه اصلی":
                                 phone=p,
                                 national_id=n,
                                 field=field_sel,
+                                password=ref_pass,
                                 is_active=active,
                             )
                         )
@@ -747,7 +794,7 @@ if st.session_state.page == "صفحه اصلی":
                     st.rerun()
 
         with t3:
-            st.header("پیشنهاد موضوعات (مدیر)")
+            st.subheader("پیشنهاد موضوعات (مدیر)")
             title = st.text_input("عنوان موضوع", key="topic_title")
             field_sel = st.selectbox("حوزه", FIELDS, key="topic_field")
             desc = st.text_area("توضیحات", key="topic_desc", height=120)
@@ -767,7 +814,7 @@ if st.session_state.page == "صفحه اصلی":
                     st.rerun()
 
         with t4:
-            st.header("تحقیقات صورت گرفته (مدیر)")
+            st.subheader("تحقیقات صورت گرفته (مدیر)")
             title = st.text_input("عنوان تحقیق", key="res_title")
             field_sel = st.selectbox("حوزه", FIELDS, key="res_field")
             summary = st.text_area("خلاصه / توضیحات", key="res_sum", height=120)
@@ -786,6 +833,9 @@ if st.session_state.page == "صفحه اصلی":
                     st.success("تحقیق ثبت شد ✅")
                     st.rerun()
 
+    # =========================
+    # REFEREE HOME
+    # =========================
     else:
         st.header("پنل داور تخصصی / نخبگان دانشی")
         mine = [s for s in st.session_state.submissions if normalize_phone(s.assigned_referee_phone) == normalize_phone(st.session_state.phone)]
@@ -835,6 +885,9 @@ if st.session_state.page == "صفحه اصلی":
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+# =========================
+# Page: Forum
+# =========================
 elif st.session_state.page == "تالار گفتگو":
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.header("تالار گفتگو")
@@ -844,7 +897,6 @@ elif st.session_state.page == "تالار گفتگو":
         if not msg.strip():
             st.error("متن پیام خالی است.")
         else:
-            flagged = has_bad_words(msg)
             st.session_state.forum_posts.insert(
                 0,
                 ForumPost(
@@ -854,7 +906,6 @@ elif st.session_state.page == "تالار گفتگو":
                     text=msg.strip(),
                     ts=now_ts(),
                     status="pending",
-                    moderator_note="(مشکوک به کلمات نامناسب)" if flagged else "",
                 ),
             )
             st.success("ارسال شد ✅")
@@ -885,7 +936,7 @@ elif st.session_state.page == "تالار گفتگو":
                             st.success("پاسخ ثبت شد ✅")
                             st.rerun()
 
-    if st.session_state.role == "manager":
+    if is_admin():
         st.divider()
         st.header("تایید پیام‌ها (مدیر)")
         pend = [p for p in st.session_state.forum_posts if p.status == "pending"]
@@ -896,38 +947,40 @@ elif st.session_state.page == "تالار گفتگو":
                 with st.container(border=True):
                     st.write(f"**از:** {p.sender_name} ({p.sender_phone})")
                     st.write(p.text)
-                    note = st.text_input("یادداشت مدیر (اختیاری)", key=f"note_{p.id}")
                     cA, cB = st.columns(2)
                     with cA:
                         if st.button("تایید", key=f"ap_{p.id}", type="primary"):
                             p.status = "approved"
-                            p.moderator_note = note.strip()
                             st.success("تایید شد ✅")
                             st.rerun()
                     with cB:
                         if st.button("رد", key=f"rej_{p.id}"):
                             p.status = "rejected"
-                            p.moderator_note = note.strip()
                             st.warning("رد شد")
                             st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+# =========================
+# Profile
+# =========================
 elif st.session_state.page == "پروفایل":
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.header("پروفایل")
     st.text_input("نام و نام خانوادگی", value=st.session_state.name, disabled=True)
     st.text_input("شماره همراه", value=st.session_state.phone, disabled=True)
-    st.text_input("کد ملی", value="********", disabled=True)
     if st.button("خروج", type="primary"):
         logout()
     st.markdown("</div>", unsafe_allow_html=True)
 
+# =========================
+# Documents (Admin only)
+# =========================
 else:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.header("اسناد")
 
-    if st.session_state.role != "manager":
+    if not is_admin():
         st.warning("این بخش فقط برای مدیر سامانه فعال است.")
     else:
         title = st.text_input("عنوان سند")
