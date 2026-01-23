@@ -943,37 +943,48 @@ if not st.session_state.logged_in:
             p = normalize_phone(phone)
             n = normalize_nid(nid)
 
-            if role == "user":
-                if not p or not password:
-                    st.error("شماره همراه و رمز عبور را وارد کنید.")
-                    st.stop()
-                row = db_user_get(p)
-                if not row or row[3] != password:
-                    st.error("کاربر یافت نشد یا رمز اشتباه است. لطفاً ثبت‌نام کنید.")
-                    st.stop()
-                st.session_state.name = row[1]
-                st.session_state.nid = row[2]
+if role == "user":
+    if not p or not password:
+        st.error("شماره همراه و رمز عبور را وارد کنید.")
+        st.stop()
 
-            elif role == "manager":
-                if not p or not n or not password:
-                    st.error("شماره همراه، کد ملی و رمز عبور را وارد کنید.")
-                    st.stop()
-                if p != normalize_phone(st.session_state.manager_phone) or n != normalize_nid(st.session_state.manager_nid) or password != st.session_state.manager_password:
-                    st.error("مشخصات مدیر سامانه اشتباه است.")
-                    st.stop()
-                st.session_state.name = "مدیر سامانه"
-                st.session_state.nid = st.session_state.manager_nid
+    row = db_user_get(p)
+    if not row or row[3] != password:
+        st.error("کاربر یافت نشد یا رمز اشتباه است. لطفاً ثبت‌نام کنید.")
+        st.stop()
 
-            else:
-                if not p or not n or not password:
-                    st.error("شماره همراه، کد ملی و رمز عبور را وارد کنید.")
-                    st.stop()
-                ref = db_referee_find(p, n, password)
-                if not ref:
-                    st.error("داور یافت نشد یا مشخصات اشتباه است.")
-                    st.stop()
-                st.session_state.name = f"{ref[0]} {ref[1]}"
-                st.session_state.nid = ref[3]
+    st.session_state.name = row[1]
+    st.session_state.nid = row[2]
+
+elif role == "manager":
+    if not p or not n or not password:
+        st.error("شماره همراه، کد ملی و رمز عبور را وارد کنید.")
+        st.stop()
+
+    if (
+        p != normalize_phone(st.session_state.manager_phone)
+        or n != normalize_nid(st.session_state.manager_nid)
+        or password != st.session_state.manager_password
+    ):
+        st.error("مشخصات مدیر سامانه اشتباه است.")
+        st.stop()
+
+    st.session_state.name = "مدیر سامانه"
+    st.session_state.nid = st.session_state.manager_nid
+
+else:  # referee
+    if not p or not n or not password:
+        st.error("شماره همراه، کد ملی و رمز عبور را وارد کنید.")
+        st.stop()
+
+    ref = db_referee_find(p, n, password)
+    if not ref:
+        st.error("داور یافت نشد یا مشخصات اشتباه است.")
+        st.stop()
+
+    st.session_state.name = f"{ref[0]} {ref[1]}"
+    st.session_state.nid = ref[3]
+
 
             st.session_state.logged_in = True
             st.session_state.role = role
